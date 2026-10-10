@@ -5,13 +5,14 @@ public enum TokenKind: Equatable, Sendable {
     /// A string with `\(...)` interpolation, split into text and code.
     case interpolated([StringPart])
     case number(Double)
-    /// An operator: `==` `!=` `!` `&&` `||` `<` `<=` `>` `>=` `+` `-` `*` `/` `%`
+    /// An operator: `==` `!=` `!` `&&` `||` `<` `<=` `>` `>=` `+` `-` `*` `/` `%`,
+    /// or an assignment: `=` `+=` `-=`
     case symbol(String)
     case leftParen, rightParen
     case leftBrace, rightBrace
     case leftBracket, rightBracket
     case comma, colon, dot, question, arrow
-    /// A character Laur doesn't use yet, like `=`. The parser reports it, so a
+    /// A character Laur doesn't use, like `@`. The parser reports it, so a
     /// keyword earlier on the line (like `state`) gets the clearer error first.
     case unknown(Character)
     case endOfFile
@@ -81,8 +82,8 @@ public struct Lexer {
         return try lexer.tokenize()
     }
 
-    private static let twoCharacterSymbols: Set<String> = ["==", "!=", "&&", "||", "<=", ">="]
-    private static let oneCharacterSymbols: Set<Character> = ["!", "<", ">", "+", "-", "*", "/", "%"]
+    private static let twoCharacterSymbols: Set<String> = ["==", "!=", "&&", "||", "<=", ">=", "+=", "-="]
+    private static let oneCharacterSymbols: Set<Character> = ["!", "<", ">", "+", "-", "*", "/", "%", "="]
 
     public mutating func tokenize() throws -> [Token] {
         var tokens: [Token] = []
