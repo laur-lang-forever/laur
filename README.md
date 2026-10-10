@@ -21,9 +21,10 @@ component ProductCard(product: Product) {
 }
 ```
 
-> **Status: milestone 2, pre-alpha.** Laur parses and live-previews components with
-> lists, conditions and position context. State, gates, events, navigation and the
-> Swift compiler are designed but not built yet. The syntax will change.
+> **Status: milestone 3, pre-alpha.** Laur parses and live-previews interactive
+> components with state, actions, lists, conditions and position context. Async
+> loading, gates, events, navigation and the Swift compiler are designed but not built
+> yet. The syntax will change.
 
 ## Try it
 
@@ -45,6 +46,13 @@ each component knows about its position:
 
 ```sh
 swift run laur preview Examples/ProductList/ProductList.laur
+```
+
+Previews are interactive. Type into the fields and press the buttons in the sign-up form;
+**Reset state** under the preview starts it over:
+
+```sh
+swift run laur preview Examples/SignUp/SignUp.laur
 ```
 
 For a fuller picture of what components can look like, open the storefront showcase:
@@ -76,6 +84,49 @@ gives a list.
 ```
 
 `image` accepts an `https://` URL or an [SF Symbol](https://developer.apple.com/sf-symbols/) name.
+
+## State and actions
+
+A component owns `state`, computes `derived` values from it, and changes it only in
+`action`s and button blocks. `bind` connects a field, toggle or child component to a
+state value in both directions.
+
+```laur
+component QuantityPicker {
+  state quantity: Number = 1
+
+  view {
+    stack(.horizontal, spacing: .md) {
+      text("Quantity", style: .headline)
+      spacer()
+      Stepper(value: bind quantity)
+    }
+  }
+
+  preview "one" {}
+  preview "bulk" { quantity: 10 }
+}
+
+component Stepper(value: bind Number) {
+  view {
+    stack(.horizontal, spacing: .sm) {
+      button("−", style: .secondary, enabled: value > 0) { value -= 1 }
+      text("\(value)", style: .headline)
+      button("+", style: .secondary) { value += 1 }
+    }
+  }
+
+  preview "three" { value: 3 }
+}
+```
+
+- `state` can be `String`, `Number` or `Bool`, and always has a starting value.
+- `derived` values update whenever what they use changes, and can't be assigned.
+- Statements are `x = ...`, `x += ...`, `x -= ...`, `someAction()` and `if`.
+- Parameters can't change unless declared `bind`; the checker explains how to fix it.
+- Previews can set starting state: `preview "ready" { email: "a@b.com", agreed: true }`.
+- Strings and lists have `count` and `isEmpty`; strings have `contains`, `hasPrefix`,
+  `hasSuffix`, `lowercased()`, `uppercased()` and `trimmed()`; lists have `contains`.
 
 ## Context
 
@@ -120,6 +171,9 @@ A preview can place a component anywhere with `context: .siblings(2, of: 5)` or
 | `text` | the value to show | `style`, `color` |
 | `image` | URL or symbol name | `aspect`, `corner`, `size` |
 | `badge` | a short label | `color` |
+| `field` | its label | `value: bind ...` (required), `secure`, `keyboard` |
+| `toggle` | its label | `value: bind ...` (required) |
+| `button` | its label; the block runs on tap: `button("Save") { save() }` | `style`, `enabled` |
 | `spacer` | | |
 | `divider` | | |
 
@@ -138,6 +192,8 @@ Design tokens:
 | corner | `.none` `.sm` `.md` `.lg` `.full` |
 | aspect | `.square` `.wide` `.tall` `.fit` |
 | image size | `.thumbnail` `.small` `.medium` `.large` |
+| keyboard | `.text` `.email` `.number` `.phone` `.url` |
+| button style | `.primary` `.secondary` `.plain` `.destructive` |
 
 ## How it's built
 
@@ -145,14 +201,15 @@ Design tokens:
 Sources/
   LaurCore/      Lexer, syntax tree, parser, checker, printer. No UI code.
   LaurRuntime/   Resolver (decides what's on screen and assigns context), evaluator,
-                 SwiftUI renderer, theme and sample data.
+                 state store and action runner, SwiftUI renderer, theme and sample data.
   laur/          The command-line tool and the preview window.
 Tests/
   LaurCoreTests/     Parser, expression, checker and error-message tests.
-  LaurRuntimeTests/  Context resolution and evaluation tests.
+  LaurRuntimeTests/  Context, evaluation, state and action tests.
 Examples/
   ProductCard/   Example 1 from the spec: a static card.
   ProductList/   Example 2: a list where each row knows its position.
+  SignUp/        Example 3: an interactive form, a password meter and a stepper.
   Showcase/      A storefront built from five differently styled cards and lists.
 ```
 
@@ -166,7 +223,7 @@ Each milestone implements one example from the language spec:
 
 1. ✅ Static components, previews, live reload
 2. ✅ Lists, `if`, expressions and position context
-3. State, bindings and actions
+3. ✅ State, bindings and actions
 4. Async loading with `load` and `when`
 5. Gates (A/B tests) with automatic exposure logging
 6. Whole-component version swaps
