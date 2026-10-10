@@ -4,7 +4,7 @@ import LaurCore
 /// has its context. Rendering only draws this tree; it never makes layout decisions.
 public indirect enum ResolvedNode {
     /// A primitive like `stack` or `text`, with the scope its arguments are read in.
-    case element(Element, scope: Scope, children: [ResolvedNode])
+    case element(Element, scope: InstanceScope, children: [ResolvedNode])
     /// An instance of a component, with its context and its resolved body.
     case component(Component, context: ContextInfo, children: [ResolvedNode])
     /// Something that couldn't be resolved, shown inline in place of the element.
@@ -24,14 +24,16 @@ public indirect enum ResolvedNode {
 public final class Resolver {
     public let file: SourceFile
     public let samples: SampleData
+    public let state: StateStore
 
     private var readingCounter = 0
     private var levelCounters: [Int: Int] = [:]
     private var contexts: [ContextInfo] = []
 
-    public init(file: SourceFile, samples: SampleData = SampleData()) {
+    public init(file: SourceFile, samples: SampleData = SampleData(), state: StateStore = StateStore()) {
         self.file = file
         self.samples = samples
+        self.state = state
     }
 
     public func resolve(_ component: Component, preview: PreviewBlock) -> ResolvedNode {
@@ -40,6 +42,7 @@ public final class Resolver {
         contexts = []
 
         var params: Scope = [:]
+        var startingState: Scope = [:]
         var siblings = (index: 0, count: 1)
         var readingCountOverride = 0
         do {
@@ -48,6 +51,12 @@ public final class Resolver {
                     params[param.name] = try samples.resolve(entry.value, type: param.type)
                 } else {
                     params[param.name] = .null
+                }
+            }
+            // A preview can start the component in a particular state.
+            for state in component.states {
+                if let entry = preview.entry(state.name) {
+                    startingState[state.name] = try samples.resolve(entry.value, type: state.type)
                 }
             }
             if let entry = preview.entry("context") {
@@ -63,7 +72,8 @@ public final class Resolver {
             return .failure(error as? RuntimeError ?? RuntimeError("\(error)"))
         }
 
-        let root = resolveComponent(component, params: params, siblings: siblings, parent: nil, depth: 0)
+        let root = resolveComponent(component, params: params, bound: [:], startingState: startingState,
+                                    siblings: siblings, parent: nil, depth: 0)
 
         for context in contexts {
             context.readingCount = max(readingCounter, readingCountOverride)
@@ -77,6 +87,8 @@ public final class Resolver {
     private func resolveComponent(
         _ component: Component,
         params: Scope,
+        bound: [String: String],
+        startingState: Scope,
         siblings: (index: Int, count: Int),
         parent: ContextInfo?,
         depth: Int
@@ -101,8 +113,31 @@ public final class Resolver {
         levelCounters[depth, default: 0] += 1
         contexts.append(context)
 
-        var scope = params
-        scope["context"] = .context(context)
+        var scope = InstanceScope(values: params, stateKeys: [:], component: component)
+        scope.values["context"] = .context(context)
+        do {
+            // `bind` parameters read and write the caller's state. When nothing is bound
+            // (a preview of this component alone), they get state of their own.
+            for param in component.params where param.type.isBinding {
+                let key = bound[param.name] ?? "\(path)#\(param.name)"
+                state.initialize(key, params[param.name] ?? .null)
+                scope.stateKeys[param.name] = key
+                scope.values[param.name] = state.value(key) ?? .null
+            }
+            for declaration in component.states {
+                let key = "\(path)#\(declaration.name)"
+                if state.value(key) == nil {
+                    let initial = try startingState[declaration.name] ?? Evaluator.evaluate(declaration.initial, in: scope.values)
+                    state.initialize(key, initial)
+                }
+                scope.stateKeys[declaration.name] = key
+                scope.values[declaration.name] = state.value(key) ?? .null
+            }
+            try scope.recomputeDerived()
+        } catch {
+            return .component(component, context: context, children: [.failure(error as? RuntimeError ?? RuntimeError("\(error)"))])
+        }
+
         let children = resolveNodes(component.view ?? [], scope: scope, owner: context, depth: depth, position: nil)
         return .component(component, context: context, children: children)
     }
@@ -120,7 +155,7 @@ public final class Resolver {
     /// to one list item.
     private func resolveNodes(
         _ nodes: [Node],
-        scope: Scope,
+        scope: InstanceScope,
         owner: ContextInfo,
         depth: Int,
         position: (index: Int, count: Int)?
@@ -138,7 +173,7 @@ public final class Resolver {
     }
 
     /// Flattens `if`s into the elements they choose.
-    private func place(_ nodes: [Node], scope: Scope) -> [Placed] {
+    private func place(_ nodes: [Node], scope: InstanceScope) -> [Placed] {
         var placed: [Placed] = []
         for node in nodes {
             switch node {
@@ -148,7 +183,7 @@ public final class Resolver {
                 do {
                     var chosen: [Node]? = conditional.otherwise
                     for branch in conditional.branches {
-                        let value = try Evaluator.evaluate(branch.condition, in: scope)
+                        let value = try Evaluator.evaluate(branch.condition, in: scope.values)
                         if try Evaluator.truth(value, at: branch.condition.range) {
                             chosen = branch.body
                             break
@@ -165,7 +200,7 @@ public final class Resolver {
 
     private func resolveElement(
         _ element: Element,
-        scope: Scope,
+        scope: InstanceScope,
         siblings: (index: Int, count: Int),
         owner: ContextInfo,
         depth: Int
@@ -182,14 +217,23 @@ public final class Resolver {
                 throw RuntimeError("unknown element `\(element.name)`", at: element.nameRange)
             }
             var params: Scope = [:]
+            var bound: [String: String] = [:]
             for param in target.params {
-                if let argument = element.argument(param.name) {
-                    params[param.name] = try Evaluator.evaluate(argument.value, in: scope)
-                } else {
+                guard let argument = element.argument(param.name) else {
                     params[param.name] = .null
+                    continue
+                }
+                if param.type.isBinding {
+                    guard case .bind(let name) = argument.value.kind, let key = scope.stateKeys[name] else {
+                        throw RuntimeError("`\(param.name)` needs `bind` and a state value", at: argument.value.range)
+                    }
+                    bound[param.name] = key
+                } else {
+                    params[param.name] = try Evaluator.evaluate(argument.value, in: scope.values)
                 }
             }
-            return resolveComponent(target, params: params, siblings: siblings, parent: owner, depth: depth + 1)
+            return resolveComponent(target, params: params, bound: bound, startingState: [:],
+                                    siblings: siblings, parent: owner, depth: depth + 1)
         } catch {
             return .failure(error as? RuntimeError ?? RuntimeError("\(error)"))
         }
@@ -197,12 +241,12 @@ public final class Resolver {
 
     /// Repeats the list's block for each item. Everything one item produces shares that
     /// item's position, so a row is "2 of 5" even if its block has several elements.
-    private func resolveList(_ element: Element, scope: Scope, owner: ContextInfo, depth: Int) throws -> ResolvedNode {
+    private func resolveList(_ element: Element, scope: InstanceScope, owner: ContextInfo, depth: Int) throws -> ResolvedNode {
         guard let source = element.positional.first else {
             throw RuntimeError("`list` needs a collection, like `list(products)`", at: element.nameRange)
         }
         let items: [Value]
-        switch try Evaluator.evaluate(source.value, in: scope) {
+        switch try Evaluator.evaluate(source.value, in: scope.values) {
         case .list(let values): items = values
         case .null: items = []
         case let other:
@@ -212,7 +256,7 @@ public final class Resolver {
         var children: [ResolvedNode] = []
         for (i, item) in items.enumerated() {
             var itemScope = scope
-            itemScope[name] = item
+            itemScope.values[name] = item
             children += resolveNodes(element.children ?? [], scope: itemScope, owner: owner, depth: depth, position: (i, items.count))
         }
         return .element(element, scope: scope, children: children)
