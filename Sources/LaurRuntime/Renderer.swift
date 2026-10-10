@@ -11,19 +11,28 @@ public struct Renderer {
     public var file: SourceFile
     public var theme: Theme
     public var samples: SampleData
+    /// Where `state` lives. Fields, toggles and buttons write to it.
+    public var state: StateStore
     /// Draws each component's context over it, for checking position logic at a glance.
     public var showsContext: Bool
 
-    public init(file: SourceFile, theme: Theme = .standard, samples: SampleData = SampleData(), showsContext: Bool = false) {
+    public init(
+        file: SourceFile,
+        theme: Theme = .standard,
+        samples: SampleData = SampleData(),
+        state: StateStore = StateStore(),
+        showsContext: Bool = false
+    ) {
         self.file = file
         self.theme = theme
         self.samples = samples
+        self.state = state
         self.showsContext = showsContext
     }
 
     /// Renders one named preview of a component.
     public func render(_ component: Component, preview: PreviewBlock) -> AnyView {
-        let resolved = Resolver(file: file, samples: samples).resolve(component, preview: preview)
+        let resolved = Resolver(file: file, samples: samples, state: state).resolve(component, preview: preview)
         return view(for: resolved)
     }
 
@@ -63,14 +72,31 @@ public struct Renderer {
         }
         return AnyView(
             VStack(alignment: .leading, spacing: spacing) {
-                ForEach(Array(children.enumerated()), id: \.offset) { _, child in
-                    view(for: child)
+                ForEach(identified(children), id: \.id) { item in
+                    view(for: item.node)
                 }
             }
         )
     }
 
-    private func build(_ element: Element, scope: Scope, children: [ResolvedNode]) throws -> AnyView {
+    /// Gives each child an identity from its place in the source, not its position, so a
+    /// field keeps its focus when an `if` above it shows or hides something.
+    private func identified(_ children: [ResolvedNode]) -> [(id: String, node: ResolvedNode)] {
+        var seen: [String: Int] = [:]
+        return children.enumerated().map { index, node in
+            let base: String
+            switch node {
+            case .element(let element, _, _): base = "e\(element.range.start.offset)"
+            case .component(_, let context, _): base = "c\(context.path)"
+            case .failure: base = "f\(index)"
+            }
+            let occurrence = seen[base, default: 0]
+            seen[base] = occurrence + 1
+            return (id: "\(base)#\(occurrence)", node: node)
+        }
+    }
+
+    private func build(_ element: Element, scope: InstanceScope, children: [ResolvedNode]) throws -> AnyView {
         switch element.name {
         case "stack": return try stack(element, children: children)
         case "list":
@@ -79,8 +105,8 @@ public struct Renderer {
                 return AnyView(
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(alignment: .top, spacing: spacing) {
-                            ForEach(Array(children.enumerated()), id: \.offset) { _, child in
-                                view(for: child)
+                            ForEach(identified(children), id: \.id) { item in
+                                view(for: item.node)
                             }
                         }
                     }
@@ -90,6 +116,9 @@ public struct Renderer {
         case "text": return try text(element, scope: scope)
         case "image": return try image(element, scope: scope)
         case "badge": return try badge(element, scope: scope)
+        case "field": return try field(element, scope: scope)
+        case "toggle": return try toggle(element, scope: scope)
+        case "button": return try button(element, scope: scope)
         case "spacer": return AnyView(Spacer(minLength: 0))
         case "divider": return AnyView(Divider())
         default:
@@ -103,18 +132,18 @@ public struct Renderer {
         let horizontal = element.positional.first?.value.tokenName == "horizontal"
         let spacing = try length(element.argument("spacing"), in: theme.spacing) ?? theme.spacing["sm"] ?? 8
         let alignment = element.argument("alignment")?.value.tokenName
-        let items = Array(children.enumerated())
+        let items = identified(children)
 
         let content: AnyView
         if horizontal {
             let vertical: VerticalAlignment = alignment == "leading" ? .top : alignment == "trailing" ? .bottom : .center
             content = AnyView(HStack(alignment: vertical, spacing: spacing) {
-                ForEach(items, id: \.offset) { _, child in view(for: child) }
+                ForEach(items, id: \.id) { item in view(for: item.node) }
             })
         } else {
             let horizontalAlignment: HorizontalAlignment = alignment == "center" ? .center : alignment == "trailing" ? .trailing : .leading
             content = AnyView(VStack(alignment: horizontalAlignment, spacing: spacing) {
-                ForEach(items, id: \.offset) { _, child in view(for: child) }
+                ForEach(items, id: \.id) { item in view(for: item.node) }
             })
         }
 
@@ -131,11 +160,11 @@ public struct Renderer {
         return result
     }
 
-    private func text(_ element: Element, scope: Scope) throws -> AnyView {
+    private func text(_ element: Element, scope: InstanceScope) throws -> AnyView {
         guard let first = element.positional.first else {
             throw RuntimeError("`text` needs a value", at: element.nameRange)
         }
-        let value = try Evaluator.evaluate(first.value, in: scope)
+        let value = try Evaluator.evaluate(first.value, in: scope.values)
         let font = element.argument("style")?.value.tokenName.flatMap { theme.fonts[$0] } ?? theme.fonts["body"] ?? .body
         let color = element.argument("color")?.value.tokenName.flatMap { theme.colors[$0] } ?? .primary
         return AnyView(
@@ -146,11 +175,11 @@ public struct Renderer {
         )
     }
 
-    private func badge(_ element: Element, scope: Scope) throws -> AnyView {
+    private func badge(_ element: Element, scope: InstanceScope) throws -> AnyView {
         guard let first = element.positional.first else {
             throw RuntimeError("`badge` needs a label", at: element.nameRange)
         }
-        let value = try Evaluator.evaluate(first.value, in: scope)
+        let value = try Evaluator.evaluate(first.value, in: scope.values)
         let color = element.argument("color")?.value.tokenName.flatMap { theme.colors[$0] } ?? theme.colors["accent"] ?? .accentColor
         return AnyView(
             Text(value.description)
@@ -162,11 +191,11 @@ public struct Renderer {
         )
     }
 
-    private func image(_ element: Element, scope: Scope) throws -> AnyView {
+    private func image(_ element: Element, scope: InstanceScope) throws -> AnyView {
         guard let first = element.positional.first else {
             throw RuntimeError("`image` needs a URL or a symbol name", at: element.nameRange)
         }
-        let source = try Evaluator.evaluate(first.value, in: scope).description
+        let source = try Evaluator.evaluate(first.value, in: scope.values).description
         let surface = theme.colors["surface"] ?? Color.gray.opacity(0.12)
 
         let picture: AnyView
@@ -218,6 +247,91 @@ public struct Renderer {
             result = AnyView(result.clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous)))
         }
         return result
+    }
+
+    // MARK: - Interactive elements
+
+    /// The state key behind `value: bind x`.
+    private func boundKey(_ element: Element, scope: InstanceScope) throws -> String {
+        guard let argument = element.argument("value") else {
+            throw RuntimeError("`\(element.name)` needs `value: bind ...`", at: element.nameRange)
+        }
+        guard case .bind(let name) = argument.value.kind, let key = scope.stateKeys[name] else {
+            throw RuntimeError("`value` needs `bind` and a state name", at: argument.value.range)
+        }
+        return key
+    }
+
+    private func label(_ element: Element, scope: InstanceScope) throws -> String {
+        guard let first = element.positional.first else {
+            throw RuntimeError("`\(element.name)` needs a label", at: element.nameRange)
+        }
+        return try Evaluator.evaluate(first.value, in: scope.values).description
+    }
+
+    private func field(_ element: Element, scope: InstanceScope) throws -> AnyView {
+        let title = try label(element, scope: scope)
+        let key = try boundKey(element, scope: scope)
+        let store = state
+        let text = Binding<String>(
+            get: { store.value(key)?.description ?? "" },
+            set: { store.set(key, .string($0)) }
+        )
+        let secure = try element.argument("secure").map {
+            try Evaluator.truth(Evaluator.evaluate($0.value, in: scope.values), at: $0.value.range)
+        } ?? false
+
+        var result: AnyView
+        if secure {
+            result = AnyView(SecureField(title, text: text))
+        } else {
+            result = AnyView(TextField(title, text: text))
+        }
+        result = AnyView(result.textFieldStyle(.roundedBorder))
+        #if canImport(UIKit)
+        switch element.argument("keyboard")?.value.tokenName {
+        case "email": result = AnyView(result.keyboardType(.emailAddress).textInputAutocapitalization(.never))
+        case "number": result = AnyView(result.keyboardType(.decimalPad))
+        case "phone": result = AnyView(result.keyboardType(.phonePad))
+        case "url": result = AnyView(result.keyboardType(.URL).textInputAutocapitalization(.never))
+        default: break
+        }
+        #endif
+        return result
+    }
+
+    private func toggle(_ element: Element, scope: InstanceScope) throws -> AnyView {
+        let title = try label(element, scope: scope)
+        let key = try boundKey(element, scope: scope)
+        let store = state
+        let isOn = Binding<Bool>(
+            get: { store.value(key) == .bool(true) },
+            set: { store.set(key, .bool($0)) }
+        )
+        return AnyView(Toggle(title, isOn: isOn))
+    }
+
+    private func button(_ element: Element, scope: InstanceScope) throws -> AnyView {
+        let title = try label(element, scope: scope)
+        let enabled = try element.argument("enabled").map {
+            try Evaluator.truth(Evaluator.evaluate($0.value, in: scope.values), at: $0.value.range)
+        } ?? true
+        let handler = element.handler ?? []
+        let store = state
+        let style = element.argument("style")?.value.tokenName ?? "primary"
+        let base = Button(role: style == "destructive" ? .destructive : nil) {
+            ActionRunner.run(handler, in: scope, store: store)
+        } label: {
+            Text(title)
+        }
+
+        let styled: AnyView
+        switch style {
+        case "secondary", "destructive": styled = AnyView(base.buttonStyle(.bordered))
+        case "plain": styled = AnyView(base.buttonStyle(.plain).foregroundStyle(Color.accentColor))
+        default: styled = AnyView(base.buttonStyle(.borderedProminent))
+        }
+        return AnyView(styled.disabled(!enabled))
     }
 
     // MARK: - Values
