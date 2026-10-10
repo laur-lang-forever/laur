@@ -48,7 +48,7 @@ final class DiagnosticTests: XCTestCase {
     func testFeaturesFromLaterMilestonesSayNotYet() {
         XCTAssertEqual(parseError("component A { state count: Int = 0 }")?.message, "`state` isn't supported yet")
         XCTAssertEqual(parseError("gate enableV3: Bool = false")?.message, "`gate` isn't supported yet")
-        XCTAssertEqual(parseError("component A { view { if x { text(\"a\") } } }")?.message, "`if` isn't supported yet")
+        XCTAssertEqual(parseError("component A { view { when x { } } }")?.message, "`when` isn't supported yet")
     }
 
     func testStrayCharacterIsReportedWhereItAppears() {

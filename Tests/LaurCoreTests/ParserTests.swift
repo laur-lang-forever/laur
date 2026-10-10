@@ -26,14 +26,14 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(card.params.first?.type, .named(["Product"]))
         XCTAssertEqual(card.intent, "Show one product with its photo, name and price")
 
-        let root = try XCTUnwrap(card.view?.first)
+        let root = try XCTUnwrap(card.view?.first?.element)
         XCTAssertEqual(card.view?.count, 1)
         XCTAssertEqual(root.name, "stack")
         XCTAssertEqual(root.positional.first?.value.tokenName, "vertical")
         XCTAssertEqual(root.argument("spacing")?.value.tokenName, "md")
-        XCTAssertEqual(root.children?.map(\.name), ["image", "text", "text"])
+        XCTAssertEqual(root.children?.compactMap(\.element).map(\.name), ["image", "text", "text"])
 
-        let image = try XCTUnwrap(root.children?.first)
+        let image = try XCTUnwrap(root.children?.first?.element)
         XCTAssertEqual(image.positional.first?.value.kind, .path(["product", "photo"]))
         XCTAssertEqual(image.argument("aspect")?.value.tokenName, "square")
         XCTAssertEqual(image.argument("corner")?.value.tokenName, "md")
@@ -50,7 +50,7 @@ final class ParserTests: XCTestCase {
 
     func testSourceRangesPointAtTheText() throws {
         let file = try Parser.parse("component A {\n  view {\n    text(\"hi\")\n  }\n  preview \"p\" {}\n}\n")
-        let node = try XCTUnwrap(file.components.first?.view?.first)
+        let node = try XCTUnwrap(file.components.first?.view?.first?.element)
         XCTAssertEqual(node.nameRange.start, SourceLocation(line: 3, column: 5, offset: 27))
         XCTAssertEqual(node.nameRange.end.column, 9)
     }
@@ -67,7 +67,7 @@ final class ParserTests: XCTestCase {
             """
         let file = try Parser.parse(source)
         XCTAssertEqual(file.components.first?.params.map(\.name), ["title"])
-        XCTAssertEqual(file.components.first?.view?.first?.arguments.count, 2)
+        XCTAssertEqual(file.components.first?.view?.first?.element?.arguments.count, 2)
     }
 
     func testParsesOptionalAndArrayTypes() throws {
@@ -80,7 +80,7 @@ final class ParserTests: XCTestCase {
 
     func testWindowsLineEndingsKeepLineNumbers() throws {
         let file = try Parser.parse("component A {\r\n  view {\r\n    text(\"x\")\r\n  }\r\n}\r\n")
-        XCTAssertEqual(file.components.first?.view?.first?.nameRange.start.line, 3)
+        XCTAssertEqual(file.components.first?.view?.first?.element?.nameRange.start.line, 3)
     }
 
     func testPrinterOutputIsStable() throws {
