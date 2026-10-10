@@ -203,7 +203,7 @@ final class ResolverTests: XCTestCase {
         case .element(let element, let scope, let children):
             var result: [String] = []
             if element.name == "text", let argument = element.positional.first,
-               let value = try? Evaluator.evaluate(argument.value, in: scope) {
+               let value = try? Evaluator.evaluate(argument.value, in: scope.values) {
                 result.append(value.description)
             }
             return result + children.flatMap(texts)

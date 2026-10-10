@@ -36,6 +36,18 @@ final class EvaluatorTests: XCTestCase {
         }
     }
 
+    func testBuiltInPropertiesAndMethods() throws {
+        let scope: Scope = ["s": .string("  Hello@Example.com "), "xs": .list([.number(1), .number(2)])]
+        XCTAssertEqual(try eval("s.count", scope), .number(20))
+        XCTAssertEqual(try eval("xs.count", scope), .number(2))
+        XCTAssertEqual(try eval("xs.isEmpty", scope), .bool(false))
+        XCTAssertEqual(try eval("s.contains(\"@\")", scope), .bool(true))
+        XCTAssertEqual(try eval("xs.contains(2)", scope), .bool(true))
+        XCTAssertEqual(try eval("s.trimmed().lowercased()", scope), .string("hello@example.com"))
+        XCTAssertEqual(try eval("s.trimmed().hasPrefix(\"Hello\")", scope), .bool(true))
+        XCTAssertThrowsError(try eval("xs.uppercased()", scope))
+    }
+
     func testErrors() {
         XCTAssertThrowsError(try eval("1 / 0")) { error in
             XCTAssertEqual((error as? RuntimeError)?.message, "division by zero")
