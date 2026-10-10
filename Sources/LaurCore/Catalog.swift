@@ -11,6 +11,7 @@ public enum TokenCategory: String, CaseIterable, Sendable {
     case imageSize = "image size"
     case keyboard
     case buttonStyle = "button style"
+    case errorKind = "error kind"
 
     public var names: [String] {
         switch self {
@@ -24,6 +25,7 @@ public enum TokenCategory: String, CaseIterable, Sendable {
         case .imageSize: return ["thumbnail", "small", "medium", "large"]
         case .keyboard: return ["text", "email", "number", "phone", "url"]
         case .buttonStyle: return ["primary", "secondary", "plain", "destructive"]
+        case .errorKind: return ["network", "notFound", "unauthorized", "server", "other"]
         }
     }
 }
@@ -150,6 +152,14 @@ public struct Primitive {
             ],
             allowsChildren: false,
             summary: "runs its block when tapped"
+        ),
+        Primitive(
+            name: "spinner",
+            positional: [],
+            requiredPositional: 0,
+            labeled: [],
+            allowsChildren: false,
+            summary: "shows that something is loading"
         ),
         Primitive(
             name: "spacer",

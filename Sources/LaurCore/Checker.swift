@@ -17,6 +17,16 @@ public struct Checker {
 
     public mutating func run() -> [Diagnostic] {
         diagnostics = []
+        var services: Set<String> = []
+        for service in file.services {
+            if !services.insert(service.name).inserted {
+                report("there's already a service named `\(service.name)`", at: service.nameRange)
+            }
+            var functions: Set<String> = []
+            for function in service.functions where !functions.insert(function.name).inserted {
+                report("`\(service.name)` already has a function named `\(function.name)`", at: function.nameRange)
+            }
+        }
         var seen: Set<String> = []
         for component in file.components {
             if !seen.insert(component.name).inserted {
@@ -92,6 +102,14 @@ public struct Checker {
             scope.insert(derived.name)
         }
 
+        for load in component.loads {
+            if !declared.insert(load.name).inserted {
+                report("`\(load.name)` is already declared in `\(component.name)`", at: load.nameRange)
+            }
+            checkServiceCall(load.call, in: component, scope: scope)
+            scope.insert(load.name)
+        }
+
         var actionNames: Set<String> = []
         for action in component.actions {
             if !actionNames.insert(action.name).inserted {
@@ -133,6 +151,11 @@ public struct Checker {
                         help.append("declare it with `action \(name)() { ... }`")
                     }
                     report("`\(component.name)` has no action `\(name)`", at: range, help: help)
+                }
+            case .reload(let name, let range):
+                if component.load(named: name) == nil {
+                    report("`\(name)` isn't a `load`, so it can't be reloaded", at: range,
+                           help: suggestion(for: name, in: component.loads.map(\.name)))
                 }
             case .conditional(let branches, let otherwise, _):
                 for branch in branches {
@@ -185,11 +208,15 @@ public struct Checker {
                 checkPreviewContext(entry)
                 continue
             }
+            if component.load(named: entry.name) != nil {
+                checkPreviewLoad(entry)
+                continue
+            }
             guard component.param(named: entry.name) != nil || component.state(named: entry.name) != nil else {
                 report(
                     "`\(entry.name)` isn't a parameter or state of `\(component.name)`",
                     at: entry.nameRange,
-                    help: suggestion(for: entry.name, in: paramNames + component.states.map(\.name) + ["context"])
+                    help: suggestion(for: entry.name, in: paramNames + component.states.map(\.name) + component.loads.map(\.name) + ["context"])
                 )
                 continue
             }
@@ -204,6 +231,39 @@ public struct Checker {
                 at: preview.range,
                 help: ["add `\(param.name): .sample`"]
             )
+        }
+    }
+
+    /// A preview can pin a load: `.loading`, `.failed(.network, "message")` or `.loaded(value)`.
+    private mutating func checkPreviewLoad(_ entry: PreviewEntry) {
+        let help = ["use `.loading`, `.failed(.network)`, `.failed(.server, \"message\")` or `.loaded(.samples(3))`"]
+        guard case .token(let name, let arguments) = entry.value.kind else {
+            report("`\(entry.name)` is a `load`, so its preview value is a load state", at: entry.value.range, help: help)
+            return
+        }
+        let args = arguments ?? []
+        switch name {
+        case "loading" where args.isEmpty:
+            break
+        case "failed" where (1...2).contains(args.count):
+            guard let kind = args[0].value.tokenName, TokenCategory.errorKind.names.contains(kind) else {
+                report("`.failed` starts with an error kind", at: args[0].value.range,
+                       help: ["error kinds are \(TokenCategory.errorKind.names.map { ".\($0)" }.joined(separator: ", "))"])
+                return
+            }
+            if args.count == 2 {
+                if case .string = args[1].value.kind {
+                    // A message, as expected.
+                } else {
+                    report("the second argument of `.failed` is a message", at: args[1].value.range)
+                }
+            }
+        case "loaded" where args.count == 1:
+            if !args[0].value.paths.isEmpty {
+                report("previews take fixed values, not properties", at: args[0].value.range)
+            }
+        default:
+            report("`.\(name)` isn't a load state", at: entry.value.range, help: help)
         }
     }
 
@@ -243,7 +303,85 @@ public struct Checker {
                 if let otherwise = conditional.otherwise {
                     checkNodes(otherwise, in: component, scope: scope)
                 }
+            case .when(let when):
+                checkWhen(when, in: component, scope: scope)
             }
+        }
+    }
+
+    /// `when` must name a `load` and handle `loading`, `failed` and `loaded` exactly once.
+    private mutating func checkWhen(_ when: When, in component: Component, scope: Set<String>) {
+        if component.load(named: when.subject) == nil {
+            var help = suggestion(for: when.subject, in: component.loads.map(\.name))
+            if component.loads.isEmpty {
+                help.append("declare it with `load \(when.subject) = SomeService.fetch(...)`")
+            }
+            report("`\(when.subject)` isn't a `load` in `\(component.name)`", at: when.subjectRange, help: help)
+        }
+        var seen: Set<String> = []
+        for branch in when.branches {
+            if !seen.insert(branch.kind).inserted {
+                report("`when \(when.subject)` already has a `\(branch.kind)` case", at: branch.kindRange)
+            }
+            var branchScope = scope
+            if let binding = branch.binding {
+                if branch.kind == "loading" {
+                    report("`loading` doesn't have a value to name", at: binding.range, help: ["write `loading { ... }`"])
+                } else if scope.contains(binding.name) {
+                    report("`\(binding.name)` is already defined here", at: binding.range,
+                           help: ["pick another name, like `\(branch.kind == "failed" ? "error" : "items")`"])
+                } else {
+                    branchScope.insert(binding.name)
+                }
+            }
+            checkNodes(branch.body, in: component, scope: branchScope)
+        }
+        for kind in ["loading", "failed", "loaded"] where !seen.contains(kind) {
+            let example = kind == "loading" ? "loading { spinner() }" : kind == "failed" ? "failed(error) { ... }" : "loaded(value) { ... }"
+            report(
+                "`when \(when.subject)` needs a `\(kind)` case",
+                at: when.subjectRange,
+                help: ["a load can be loading, can fail, or can succeed, and each needs a screen; add `\(example)`"]
+            )
+        }
+    }
+
+    /// The value of a `load`: a call to a declared service function with labeled arguments.
+    private mutating func checkServiceCall(_ expr: Expr, in component: Component, scope: Set<String>) {
+        guard case .method(let receiver, let functionName, let arguments) = expr.kind,
+              case .path(let path) = receiver.kind, path.count == 1 else {
+            report("`load` takes a service call", at: expr.range,
+                   help: ["for example `Orders.fetch(userId: userId)`"])
+            return
+        }
+        guard let service = file.service(named: path[0]) else {
+            var help = suggestion(for: path[0], in: file.services.map(\.name))
+            help.append("declare it: `service \(path[0]) { \(functionName)(...) -> SomeType }`")
+            report("there's no service named `\(path[0])`", at: receiver.range, help: help)
+            return
+        }
+        guard let function = service.function(named: functionName) else {
+            report("`\(service.name)` has no function `\(functionName)`", at: expr.range,
+                   help: suggestion(for: functionName, in: service.functions.map(\.name)))
+            return
+        }
+        var passed: Set<String> = []
+        for argument in arguments {
+            guard let label = argument.label, let labelRange = argument.labelRange else {
+                report("arguments to `\(service.name).\(function.name)` are labeled", at: argument.range,
+                       help: function.params.first.map { ["write `\($0.name): ...`"] } ?? [])
+                continue
+            }
+            guard function.params.contains(where: { $0.name == label }) else {
+                report("`\(service.name).\(function.name)` has no parameter `\(label)`", at: labelRange,
+                       help: suggestion(for: label, in: function.params.map(\.name)))
+                continue
+            }
+            passed.insert(label)
+            checkExpr(argument.value, argument: "`\(label)`", scope: scope, component: component)
+        }
+        for param in function.params where !param.type.isOptional && !passed.contains(param.name) {
+            report("`\(service.name).\(function.name)` needs a value for `\(param.name)`", at: expr.range)
         }
     }
 
@@ -454,9 +592,23 @@ public struct Checker {
             report("\(argument) expects a value, not the token `.\(name)`", at: expr.range)
         case .unary(_, let operand):
             checkExpr(operand, argument: argument, scope: scope, component: component)
-        case .binary(_, let left, let right):
-            checkExpr(left, argument: argument, scope: scope, component: component)
-            checkExpr(right, argument: argument, scope: scope, component: component)
+        case .binary(let op, let left, let right):
+            // `error.kind == .network`: error kinds are the one place tokens are values.
+            for side in [left, right] {
+                if op == "==" || op == "!=", case .token(let name, .none) = side.kind {
+                    if !TokenCategory.errorKind.names.contains(name) {
+                        var help = suggestion(for: name, in: TokenCategory.errorKind.names, prefix: ".")
+                        help.append("error kinds are \(TokenCategory.errorKind.names.map { ".\($0)" }.joined(separator: ", "))")
+                        report("`.\(name)` isn't an error kind", at: side.range, help: help)
+                    }
+                } else {
+                    checkExpr(side, argument: argument, scope: scope, component: component)
+                }
+            }
+        case .list(let items):
+            for item in items {
+                checkExpr(item, argument: argument, scope: scope, component: component)
+            }
         case .interpolation(let parts):
             for case .expr(let inner) in parts {
                 checkExpr(inner, argument: argument, scope: scope, component: component)
@@ -465,6 +617,11 @@ public struct Checker {
             report("`bind` passes state to a field, a toggle or a `bind` parameter", at: expr.range,
                    help: ["to read the value here, drop `bind`"])
         case .method(let receiver, let name, let arguments):
+            if case .path(let path) = receiver.kind, path.count == 1, file.service(named: path[0]) != nil, !scope.contains(path[0]) {
+                report("service calls happen in `load`", at: expr.range,
+                       help: ["declare `load result = \(path[0]).\(name)(...)` and read it with `when result { ... }`"])
+                return
+            }
             checkExpr(receiver, argument: argument, scope: scope, component: component)
             if let arity = BuiltIns.methods[name] {
                 if arguments.count != arity {
@@ -489,6 +646,11 @@ public struct Checker {
         guard scope.contains(root) else {
             report("`\(root)` isn't defined in `\(component.name)`", at: range,
                    help: suggestion(for: root, in: scope.sorted()))
+            return
+        }
+        if component.load(named: root) != nil {
+            report("`\(root)` is loaded, so read it inside `when \(root) { ... }`", at: range,
+                   help: ["it may still be loading or may have failed; `when` handles each case"])
             return
         }
         guard root == "context" else { return }
