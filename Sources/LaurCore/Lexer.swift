@@ -1,7 +1,12 @@
 public enum TokenKind: Equatable, Sendable {
     case identifier(String)
+    /// A string without interpolation.
     case string(String)
+    /// A string with `\(...)` interpolation, split into text and code.
+    case interpolated([StringPart])
     case number(Double)
+    /// An operator: `==` `!=` `!` `&&` `||` `<` `<=` `>` `>=` `+` `-` `*` `/` `%`
+    case symbol(String)
     case leftParen, rightParen
     case leftBrace, rightBrace
     case leftBracket, rightBracket
@@ -15,8 +20,9 @@ public enum TokenKind: Equatable, Sendable {
     public var display: String {
         switch self {
         case .identifier(let name): return "`\(name)`"
-        case .string: return "a string"
+        case .string, .interpolated: return "a string"
         case .number: return "a number"
+        case .symbol(let op): return "`\(op)`"
         case .leftParen: return "`(`"
         case .rightParen: return "`)`"
         case .leftBrace: return "`{`"
@@ -34,6 +40,13 @@ public enum TokenKind: Equatable, Sendable {
     }
 }
 
+/// A piece of an interpolated string literal.
+public enum StringPart: Equatable, Sendable {
+    case text(String)
+    /// The source inside `\( ... )`, and where it starts, so errors point at the right place.
+    case code(String, start: SourceLocation)
+}
+
 public struct Token: Equatable, Sendable {
     public var kind: TokenKind
     public var range: SourceRange
@@ -49,18 +62,27 @@ public struct Token: Equatable, Sendable {
 public struct Lexer {
     private let chars: [Character]
     private var index = 0
-    private var line = 1
-    private var column = 1
+    private var line: Int
+    private var column: Int
+    private let baseOffset: Int
 
-    public init(_ source: String) {
+    /// - Parameter start: where this source begins in the file. Used to lex the code
+    ///   inside string interpolation with correct positions.
+    public init(_ source: String, startingAt start: SourceLocation = .start) {
         // Treat Windows line endings like plain newlines so line numbers stay right.
         self.chars = Array(source).map { $0 == "\r\n" ? "\n" : $0 }
+        self.line = start.line
+        self.column = start.column
+        self.baseOffset = start.offset
     }
 
-    public static func tokenize(_ source: String) throws -> [Token] {
-        var lexer = Lexer(source)
+    public static func tokenize(_ source: String, startingAt start: SourceLocation = .start) throws -> [Token] {
+        var lexer = Lexer(source, startingAt: start)
         return try lexer.tokenize()
     }
+
+    private static let twoCharacterSymbols: Set<String> = ["==", "!=", "&&", "||", "<=", ">="]
+    private static let oneCharacterSymbols: Set<Character> = ["!", "<", ">", "+", "-", "*", "/", "%"]
 
     public mutating func tokenize() throws -> [Token] {
         var tokens: [Token] = []
@@ -73,6 +95,7 @@ public struct Lexer {
             }
 
             let kind: TokenKind
+            let pair = peek(1).map { String([c, $0]) } ?? ""
             switch c {
             case "(": advance(); kind = .leftParen
             case ")": advance(); kind = .rightParen
@@ -83,15 +106,19 @@ public struct Lexer {
             case ",": advance(); kind = .comma
             case ":": advance(); kind = .colon
             case "?": advance(); kind = .question
-            case ".":
-                advance()
-                kind = .dot
+            case ".": advance(); kind = .dot
             case "-" where peek(1) == ">":
                 advance(); advance()
                 kind = .arrow
             case "\"":
-                kind = .string(try lexString())
-            case _ where c.isDigit || (c == "-" && (peek(1)?.isDigit ?? false)):
+                kind = try lexString()
+            case _ where Self.twoCharacterSymbols.contains(pair):
+                advance(); advance()
+                kind = .symbol(pair)
+            case _ where Self.oneCharacterSymbols.contains(c):
+                advance()
+                kind = .symbol(String(c))
+            case _ where c.isDigit:
                 kind = .number(lexNumber())
             case _ where c.isLetter || c == "_":
                 kind = .identifier(lexIdentifier())
@@ -114,12 +141,9 @@ public struct Lexer {
         return text
     }
 
+    /// Negative numbers are a unary minus applied to a number, so `index-1` reads as subtraction.
     private mutating func lexNumber() -> Double {
         var text = ""
-        if peek() == "-" {
-            text.append("-")
-            advance()
-        }
         while let c = peek(), c.isDigit {
             text.append(c)
             advance()
@@ -136,9 +160,10 @@ public struct Lexer {
         return Double(text) ?? 0
     }
 
-    private mutating func lexString() throws -> String {
+    private mutating func lexString() throws -> TokenKind {
         let start = location
         advance() // opening quote
+        var parts: [StringPart] = []
         var text = ""
         while true {
             guard let c = peek(), c != "\n" else {
@@ -151,7 +176,9 @@ public struct Lexer {
             }
             if c == "\"" {
                 advance()
-                return text
+                if parts.isEmpty { return .string(text) }
+                if !text.isEmpty { parts.append(.text(text)) }
+                return .interpolated(parts)
             }
             if c == "\\" {
                 let escapeStart = location
@@ -164,23 +191,65 @@ public struct Lexer {
                 case "\"": text.append("\"")
                 case "\\": text.append("\\")
                 case "(":
-                    throw Diagnostic(
-                        .error,
-                        "string interpolation isn't supported yet",
-                        at: SourceRange(start: escapeStart, end: location),
-                        help: ["it's planned for a later milestone; pass the value as its own argument for now"]
-                    )
+                    if !text.isEmpty { parts.append(.text(text)) }
+                    text = ""
+                    parts.append(try lexInterpolation(openedAt: escapeStart))
                 default:
                     throw Diagnostic(
                         .error,
                         "unknown escape `\\\(e)`",
                         at: SourceRange(start: escapeStart, end: location),
-                        help: ["supported escapes are \\n, \\t, \\\" and \\\\"]
+                        help: ["supported escapes are \\n, \\t, \\\", \\\\ and \\( ... ) for interpolation"]
                     )
                 }
                 continue
             }
             text.append(c)
+            advance()
+        }
+    }
+
+    /// Reads the code inside `\( ... )`, up to the matching `)`. The opening `\(` is consumed.
+    private mutating func lexInterpolation(openedAt open: SourceLocation) throws -> StringPart {
+        let codeStart = location
+        var code = ""
+        var depth = 1
+        while true {
+            guard let c = peek(), c != "\n" else {
+                throw Diagnostic(
+                    .error,
+                    "this interpolation is never closed",
+                    at: SourceRange(start: open, end: location),
+                    help: ["add a `)` to end the `\\(`"]
+                )
+            }
+            if c == "(" { depth += 1 }
+            if c == ")" {
+                depth -= 1
+                if depth == 0 {
+                    advance()
+                    return .code(code, start: codeStart)
+                }
+            }
+            if c == "\"" {
+                // A string inside the interpolation: copy it whole so its parentheses don't count.
+                code.append(c)
+                advance()
+                while let s = peek(), s != "\"", s != "\n" {
+                    code.append(s)
+                    advance()
+                    if s == "\\", let escaped = peek() {
+                        code.append(escaped)
+                        advance()
+                    }
+                }
+                if peek() == "\"" {
+                    code.append("\"")
+                    advance()
+                }
+                continue
+            }
+            code.append(c)
             advance()
         }
     }
@@ -200,7 +269,7 @@ public struct Lexer {
     // MARK: - Cursor
 
     private var location: SourceLocation {
-        SourceLocation(line: line, column: column, offset: index)
+        SourceLocation(line: line, column: column, offset: baseOffset + index)
     }
 
     private func peek(_ ahead: Int = 0) -> Character? {
