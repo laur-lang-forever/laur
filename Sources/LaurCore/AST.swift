@@ -80,12 +80,33 @@ public indirect enum TypeRef: Equatable, Sendable, CustomStringConvertible {
     }
 }
 
-/// One element in a view: `text(product.name, style: .headline)` or
-/// `stack(.vertical) { ... }`. The name is either a primitive or another component.
-public struct Node: Equatable, Sendable {
+/// One entry in a view block: an element like `text(...)`, or an `if`.
+public indirect enum Node: Equatable, Sendable {
+    case element(Element)
+    case conditional(Conditional)
+
+    public var range: SourceRange {
+        switch self {
+        case .element(let element): return element.range
+        case .conditional(let conditional): return conditional.range
+        }
+    }
+
+    /// The element, when this node is one.
+    public var element: Element? {
+        if case .element(let element) = self { return element }
+        return nil
+    }
+}
+
+/// A call in a view: `text(product.name, style: .headline)`, `stack(.vertical) { ... }`
+/// or `list(products) { product in ... }`. The name is a primitive or another component.
+public struct Element: Equatable, Sendable {
     public var name: String
     public var nameRange: SourceRange
     public var arguments: [Argument]
+    /// The item name in `{ product in ... }`, for `list`.
+    public var binding: Binding?
     /// The `{ ... }` block after the call, or nil when there isn't one.
     public var children: [Node]?
     public var range: SourceRange
@@ -96,6 +117,24 @@ public struct Node: Equatable, Sendable {
     public func argument(_ label: String) -> Argument? {
         arguments.first { $0.label == label }
     }
+}
+
+/// `product in`, at the start of a `list` block.
+public struct Binding: Equatable, Sendable {
+    public var name: String
+    public var range: SourceRange
+}
+
+/// `if a { ... } else if b { ... } else { ... }`
+public struct Conditional: Equatable, Sendable {
+    public struct Branch: Equatable, Sendable {
+        public var condition: Expr
+        public var body: [Node]
+    }
+
+    public var branches: [Branch]
+    public var otherwise: [Node]?
+    public var range: SourceRange
 }
 
 /// `style: .headline` or an unlabeled `product.name`.
@@ -116,8 +155,19 @@ public struct Expr: Equatable, Sendable {
         case bool(Bool)
         /// `.headline`, or `.sample(name: "x")` when it has arguments.
         case token(String, arguments: [Argument]?)
-        /// `product.name`
+        /// `product.name`, `context.siblings.index`
         case path([String])
+        /// `!isLast`, `-offset`
+        case unary(String, Expr)
+        /// `index + 1`, `a && b`, `count == 0`
+        case binary(String, Expr, Expr)
+        /// `"#\(index + 1) of \(count)"`
+        case interpolation([InterpolationPart])
+    }
+
+    public enum InterpolationPart: Equatable, Sendable {
+        case text(String)
+        case expr(Expr)
     }
 
     public var kind: Kind
@@ -132,6 +182,22 @@ public struct Expr: Equatable, Sendable {
     public var tokenName: String? {
         if case .token(let name, _) = kind { return name }
         return nil
+    }
+
+    /// Every property path used anywhere in this expression, with its range.
+    public var paths: [(path: [String], range: SourceRange)] {
+        switch kind {
+        case .path(let path): return [(path, range)]
+        case .unary(_, let operand): return operand.paths
+        case .binary(_, let left, let right): return left.paths + right.paths
+        case .interpolation(let parts):
+            return parts.flatMap { part -> [(path: [String], range: SourceRange)] in
+                if case .expr(let e) = part { return e.paths }
+                return []
+            }
+        case .token(_, let arguments): return (arguments ?? []).flatMap { $0.value.paths }
+        case .string, .number, .bool: return []
+        }
     }
 }
 
