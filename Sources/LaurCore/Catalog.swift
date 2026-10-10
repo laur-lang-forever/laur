@@ -88,6 +88,26 @@ public struct Primitive {
             summary: "shows an image from a URL or a system symbol name"
         ),
         Primitive(
+            name: "list",
+            positional: [.value],
+            requiredPositional: 1,
+            labeled: [
+                ("spacing", .tokenOrNumber(.spacing)),
+            ],
+            allowsChildren: true,
+            summary: "repeats its block once for each item in a collection"
+        ),
+        Primitive(
+            name: "badge",
+            positional: [.value],
+            requiredPositional: 1,
+            labeled: [
+                ("color", .token(.color)),
+            ],
+            allowsChildren: false,
+            summary: "shows a short label in a pill"
+        ),
+        Primitive(
             name: "spacer",
             positional: [],
             requiredPositional: 0,
@@ -107,5 +127,42 @@ public struct Primitive {
 
     public static func named(_ name: String) -> Primitive? {
         all.first { $0.name == name }
+    }
+}
+
+/// What `context` offers inside a component. Each group answers one question about
+/// where the component sits, with its own `index` and `count` so they never get mixed up.
+public enum ContextSchema {
+    public struct Group {
+        public var name: String
+        public var fields: [String]
+        public var summary: String
+    }
+
+    public static let groups: [Group] = [
+        Group(name: "siblings", fields: ["index", "count", "isFirst", "isLast"],
+              summary: "position among the items next to it in the nearest container"),
+        Group(name: "reading", fields: ["index", "count", "isFirst"],
+              summary: "position in reading order across the whole screen (depth-first)"),
+        Group(name: "level", fields: ["depth", "index", "count"],
+              summary: "nesting depth, and position among components at the same depth (breadth-first)"),
+        Group(name: "parent", fields: ["type", "path"],
+              summary: "the component that contains this one"),
+    ]
+
+    /// Designed, but arriving with a later milestone.
+    public static let laterGroups: [String: String] = [
+        "screen": "geometric context (visibility, position on screen) arrives with `on appear` events",
+    ]
+
+    /// Fields only known once the whole screen is laid out. Because `if` decides what's
+    /// laid out, these can be shown but can't be used in an `if` condition.
+    public static let knownAfterLayout: Set<[String]> = [
+        ["reading", "count"],
+        ["level", "count"],
+    ]
+
+    public static func group(named name: String) -> Group? {
+        groups.first { $0.name == name }
     }
 }
