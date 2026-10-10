@@ -1,0 +1,110 @@
+// Example 3 from the spec: state, derived values, actions and bindings.
+// The previews are interactive: type in the fields and press the buttons.
+
+component SignUpForm {
+  intent "Create an account with an email and password"
+
+  state email: String = ""
+  state password: String = ""
+  state agreed: Bool = false
+  state submitted: Bool = false
+  derived validEmail = email.contains("@") && email.contains(".")
+  derived longEnough = password.count >= 8
+  derived canSubmit = validEmail && longEnough && agreed
+
+  view {
+    stack(.vertical, spacing: .md, padding: .lg) {
+      if submitted {
+        text("Welcome!", style: .largeTitle)
+        text("We sent a confirmation to \(email).", color: .secondary)
+        button("Start over", style: .secondary) { startOver() }
+      } else {
+        text("Create your account", style: .title)
+        field("Email", value: bind email, keyboard: .email)
+        if email.count > 0 && !validEmail {
+          text("Enter a valid email address", style: .caption, color: .error)
+        }
+        field("Password", value: bind password, secure: true)
+        PasswordStrength(password: password)
+        toggle("I agree to the terms", value: bind agreed)
+        button("Create account", enabled: canSubmit) { submit() }
+      }
+    }
+  }
+
+  action submit() {
+    submitted = true
+  }
+
+  action startOver() {
+    email = ""
+    password = ""
+    agreed = false
+    submitted = false
+  }
+
+  preview "empty" {}
+  preview "invalid" { email: "laur@", password: "123" }
+  preview "ready" { email: "laur@example.com", password: "correcthorse", agreed: true }
+  preview "done" { email: "laur@example.com", submitted: true }
+}
+
+component PasswordStrength(password: String) {
+  intent "Tell people how strong their password is as they type"
+
+  derived length = password.count
+
+  view {
+    if length == 0 {
+      text("Use 8 or more characters", style: .caption, color: .tertiary)
+    } else if length < 8 {
+      text("Too short: \(8 - length) more to go", style: .caption, color: .error)
+    } else if length < 12 {
+      text("Good", style: .caption, color: .warning)
+    } else {
+      text("Strong", style: .caption, color: .success)
+    }
+  }
+
+  preview "empty" { password: "" }
+  preview "short" { password: "abc" }
+  preview "good" { password: "horsestaple" }
+  preview "strong" { password: "correct horse battery" }
+}
+
+component QuantityPicker {
+  intent "Pick how many to buy; the stepper changes this component's state through bind"
+
+  state quantity: Number = 1
+
+  view {
+    stack(.vertical, spacing: .sm, padding: .md) {
+      stack(.horizontal, spacing: .md) {
+        text("Quantity", style: .headline)
+        spacer()
+        Stepper(value: bind quantity)
+      }
+      if quantity >= 10 {
+        text("Bulk orders ship separately", style: .caption, color: .warning)
+      }
+    }
+  }
+
+  preview "one" {}
+  preview "bulk" { quantity: 10 }
+}
+
+component Stepper(value: bind Number) {
+  intent "A minus and plus button around a number it doesn't own"
+
+  view {
+    stack(.horizontal, spacing: .sm) {
+      button("−", style: .secondary, enabled: value > 0) { value -= 1 }
+      text("\(value)", style: .headline)
+      button("+", style: .secondary) { value += 1 }
+    }
+  }
+
+  preview "three" { value: 3 }
+  preview "zero" { value: 0 }
+}
