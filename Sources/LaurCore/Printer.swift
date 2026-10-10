@@ -24,10 +24,25 @@ public enum Printer {
         if let intent = component.intent {
             sections.append(["  intent \(quote(intent))"])
         }
+        if !component.states.isEmpty || !component.derived.isEmpty {
+            var section: [String] = component.states.map {
+                "  state \($0.name): \($0.type) = \(print($0.initial))"
+            }
+            section += component.derived.map { "  derived \($0.name) = \(print($0.value))" }
+            sections.append(section)
+        }
         if let view = component.view {
             var section = ["  view {"]
             for node in view {
                 section += print(node, indent: 2)
+            }
+            section.append("  }")
+            sections.append(section)
+        }
+        for action in component.actions {
+            var section = ["  action \(action.name)() {"]
+            for statement in action.body {
+                section += print(statement, indent: 2)
             }
             section.append("  }")
             sections.append(section)
@@ -53,6 +68,9 @@ public enum Printer {
         switch node {
         case .element(let element):
             let call = "\(element.name)(\(print(element.arguments)))"
+            if let handler = element.handler {
+                return block(pad + call + " {", handler.flatMap { print($0, indent: indent + 1) }, close: pad + "}")
+            }
             guard let children = element.children else {
                 return [pad + call]
             }
@@ -85,6 +103,35 @@ public enum Printer {
             lines.append(pad + "}")
             return lines
         }
+    }
+
+    public static func print(_ statement: Statement, indent: Int) -> [String] {
+        let pad = String(repeating: "  ", count: indent)
+        switch statement {
+        case .assign(let target, _, let op, let value):
+            return [pad + "\(target) \(op) \(print(value))"]
+        case .call(let name, _):
+            return [pad + "\(name)()"]
+        case .conditional(let branches, let otherwise, _):
+            var lines: [String] = []
+            for (i, branch) in branches.enumerated() {
+                lines.append(pad + (i == 0 ? "if " : "} else if ") + print(branch.condition) + " {")
+                lines += branch.body.flatMap { print($0, indent: indent + 1) }
+            }
+            if let otherwise {
+                lines.append(pad + "} else {")
+                lines += otherwise.flatMap { print($0, indent: indent + 1) }
+            }
+            lines.append(pad + "}")
+            return lines
+        }
+    }
+
+    /// One short statement stays on the opening line, like `button("+") { count += 1 }`.
+    private static func block(_ open: String, _ body: [String], close: String) -> [String] {
+        if body.isEmpty { return [open + " }"] }
+        if body.count == 1 { return [open + " " + body[0].trimmingLeadingSpaces() + " }"] }
+        return [open] + body + [close]
     }
 
     public static func print(_ arguments: [Argument]) -> String {
@@ -124,6 +171,13 @@ public enum Printer {
                 return theirs < mine || (right && theirs == mine) ? "(\(text))" : text
             }
             return "\(side(left, right: false)) \(op) \(side(right, right: true))"
+        case .bind(let name):
+            return "bind \(name)"
+        case .method(let receiver, let name, let arguments):
+            var target = print(receiver)
+            if case .binary = receiver.kind { target = "(\(target))" }
+            if case .unary = receiver.kind { target = "(\(target))" }
+            return "\(target).\(name)(\(print(arguments)))"
         case .interpolation(let parts):
             var out = "\""
             for part in parts {
@@ -152,5 +206,11 @@ public enum Printer {
             }
         }
         return out
+    }
+}
+
+private extension String {
+    func trimmingLeadingSpaces() -> String {
+        String(drop { $0 == " " })
     }
 }
