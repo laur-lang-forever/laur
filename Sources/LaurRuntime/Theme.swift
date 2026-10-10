@@ -28,7 +28,10 @@ public struct Theme {
             "accent": .accentColor,
             "error": .red,
             "success": .green,
+            "warning": .orange,
             "surface": Color.gray.opacity(0.12),
+            // Text and icons on top of an accent or dark background.
+            "inverse": .white,
         ],
         imageSizes: ["thumbnail": 56, "small": 96, "medium": 160, "large": 260]
     )

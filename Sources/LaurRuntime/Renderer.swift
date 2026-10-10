@@ -75,6 +75,17 @@ public struct Renderer {
         case "stack": return try stack(element, children: children)
         case "list":
             let spacing = try length(element.argument("spacing"), in: theme.spacing) ?? 0
+            if element.argument("axis")?.value.tokenName == "horizontal" {
+                return AnyView(
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(alignment: .top, spacing: spacing) {
+                            ForEach(Array(children.enumerated()), id: \.offset) { _, child in
+                                view(for: child)
+                            }
+                        }
+                    }
+                )
+            }
             return column(children, spacing: spacing)
         case "text": return try text(element, scope: scope)
         case "image": return try image(element, scope: scope)

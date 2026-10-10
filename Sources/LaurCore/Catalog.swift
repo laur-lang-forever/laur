@@ -16,7 +16,7 @@ public enum TokenCategory: String, CaseIterable, Sendable {
         case .spacing: return ["none", "xs", "sm", "md", "lg", "xl"]
         case .alignment: return ["leading", "center", "trailing"]
         case .textStyle: return ["largeTitle", "title", "headline", "body", "callout", "caption", "footnote"]
-        case .color: return ["primary", "secondary", "tertiary", "accent", "error", "success", "surface"]
+        case .color: return ["primary", "secondary", "tertiary", "accent", "error", "success", "warning", "surface", "inverse"]
         case .corner: return ["none", "sm", "md", "lg", "full"]
         case .aspect: return ["square", "wide", "tall", "fit"]
         case .imageSize: return ["thumbnail", "small", "medium", "large"]
@@ -92,6 +92,7 @@ public struct Primitive {
             positional: [.value],
             requiredPositional: 1,
             labeled: [
+                ("axis", .token(.axis)),
                 ("spacing", .tokenOrNumber(.spacing)),
             ],
             allowsChildren: true,
