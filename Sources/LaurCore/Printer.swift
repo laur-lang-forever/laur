@@ -8,8 +8,19 @@ public enum Printer {
         if !file.imports.isEmpty {
             parts.append(file.imports.map { "import \($0.path.joined(separator: "."))" }.joined(separator: "\n"))
         }
+        parts += file.services.map { Printer.print($0) }
         parts += file.components.map { Printer.print($0) }
         return parts.joined(separator: "\n\n") + "\n"
+    }
+
+    public static func print(_ service: ServiceDecl) -> String {
+        var lines = ["service \(service.name) {"]
+        for function in service.functions {
+            let params = function.params.map { "\($0.name): \($0.type)" }.joined(separator: ", ")
+            lines.append("  \(function.name)(\(params)) -> \(function.returns)")
+        }
+        lines.append("}")
+        return lines.joined(separator: "\n")
     }
 
     public static func print(_ component: Component) -> String {
@@ -30,6 +41,9 @@ public enum Printer {
             }
             section += component.derived.map { "  derived \($0.name) = \(print($0.value))" }
             sections.append(section)
+        }
+        if !component.loads.isEmpty {
+            sections.append(component.loads.map { "  load \($0.name) = \(print($0.call))" })
         }
         if let view = component.view {
             var section = ["  view {"]
@@ -85,6 +99,18 @@ public enum Printer {
             lines.append(pad + "}")
             return lines
 
+        case .when(let when):
+            var lines = [pad + "when \(when.subject) {"]
+            let inner = String(repeating: "  ", count: indent + 1)
+            for branch in when.branches {
+                let binding = branch.binding.map { "(\($0.name))" } ?? ""
+                lines += block(inner + branch.kind + binding + " {",
+                               branch.body.flatMap { print($0, indent: indent + 2) },
+                               close: inner + "}")
+            }
+            lines.append(pad + "}")
+            return lines
+
         case .conditional(let conditional):
             var lines: [String] = []
             for (i, branch) in conditional.branches.enumerated() {
@@ -112,6 +138,8 @@ public enum Printer {
             return [pad + "\(target) \(op) \(print(value))"]
         case .call(let name, _):
             return [pad + "\(name)()"]
+        case .reload(let name, _):
+            return [pad + "\(name).reload()"]
         case .conditional(let branches, let otherwise, _):
             var lines: [String] = []
             for (i, branch) in branches.enumerated() {
@@ -173,6 +201,8 @@ public enum Printer {
             return "\(side(left, right: false)) \(op) \(side(right, right: true))"
         case .bind(let name):
             return "bind \(name)"
+        case .list(let items):
+            return "[" + items.map { Printer.print($0) }.joined(separator: ", ") + "]"
         case .method(let receiver, let name, let arguments):
             var target = print(receiver)
             if case .binary = receiver.kind { target = "(\(target))" }
