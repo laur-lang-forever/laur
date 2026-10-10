@@ -46,7 +46,7 @@ final class DiagnosticTests: XCTestCase {
     }
 
     func testFeaturesFromLaterMilestonesSayNotYet() {
-        XCTAssertEqual(parseError("component A { state count: Int = 0 }")?.message, "`state` isn't supported yet")
+        XCTAssertEqual(parseError("component A { load orders = x }")?.message, "`load` isn't supported yet")
         XCTAssertEqual(parseError("gate enableV3: Bool = false")?.message, "`gate` isn't supported yet")
         XCTAssertEqual(parseError("component A { view { when x { } } }")?.message, "`when` isn't supported yet")
     }
@@ -54,8 +54,8 @@ final class DiagnosticTests: XCTestCase {
     func testStrayCharacterIsReportedWhereItAppears() {
         XCTAssertEqual(parseError("component A { view { text(\"a\" = 1) } }")?.message,
                        "expected `,` or `)` after an argument to `text`, found `=`")
-        XCTAssertEqual(parseError("component A { view { text(=) } }")?.message,
-                       "unexpected character `=`")
+        XCTAssertEqual(parseError("component A { view { text(@) } }")?.message,
+                       "unexpected character `@`")
     }
 
     func testLowercaseComponentName() {
