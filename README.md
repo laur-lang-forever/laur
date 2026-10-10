@@ -21,9 +21,9 @@ component ProductCard(product: Product) {
 }
 ```
 
-> **Status: milestone 1, pre-alpha.** Laur parses and live-previews static components.
-> State, gates, events, navigation and the Swift compiler are designed but not built yet.
-> The syntax will change.
+> **Status: milestone 2, pre-alpha.** Laur parses and live-previews components with
+> lists, conditions and position context. State, gates, events, navigation and the
+> Swift compiler are designed but not built yet. The syntax will change.
 
 ## Try it
 
@@ -39,6 +39,13 @@ A preview window opens with each component's previews in the sidebar. Edit
 `ProductCard.laur` in any editor and save: the preview updates within a quarter of a
 second. Mistakes show up as readable errors above the preview, which keeps showing the
 last version that worked.
+
+Try the second example too, and turn on **Show context** in the toolbar to see what
+each component knows about its position:
+
+```sh
+swift run laur preview Examples/ProductList/ProductList.laur
+```
 
 Other commands:
 
@@ -64,15 +71,54 @@ gives a list.
 
 `image` accepts an `https://` URL or an [SF Symbol](https://developer.apple.com/sf-symbols/) name.
 
-## Elements in milestone 1
+## Context
+
+Every component can read where it sits, without the parent passing anything down:
+
+```laur
+component ProductRow(product: Product) {
+  view {
+    stack(.horizontal, spacing: .sm) {
+      if context.siblings.isFirst { badge("Top pick") }
+      text(product.name)
+      spacer()
+      text("#\(context.siblings.index + 1) of \(context.siblings.count)", color: .tertiary)
+    }
+    if !context.siblings.isLast { divider() }
+  }
+
+  preview "middle" { product: .sample, context: .siblings(2, of: 5) }
+}
+```
+
+| Group | Ordering | Fields |
+| --- | --- | --- |
+| `context.siblings` | position among the items in the nearest container (a list item, or a stack's children after `if`s) | `index`, `count`, `isFirst`, `isLast` |
+| `context.reading` | reading order across the whole screen, depth-first | `index`, `count`, `isFirst` |
+| `context.level` | nesting depth, and position among components at that depth, breadth-first | `depth`, `index`, `count` |
+| `context.parent` | the containing component | `type`, `path` |
+
+Indices start at 0. `context.reading.count` and `context.level.count` depend on the whole
+screen, so they can be shown but can't be used in an `if` (the checker explains why).
+`context.screen` (visibility, position on screen) comes with events in a later milestone.
+
+A preview can place a component anywhere with `context: .siblings(2, of: 5)` or
+`context: .reading(0, of: 3)`.
+
+## Elements
 
 | Element | Unlabeled argument | Labeled arguments |
 | --- | --- | --- |
 | `stack` | `.vertical` or `.horizontal` | `spacing`, `padding`, `alignment`, `background`, `corner` |
+| `list` | a collection; the block names each item: `list(products) { product in ... }` | `spacing` |
 | `text` | the value to show | `style`, `color` |
 | `image` | URL or symbol name | `aspect`, `corner`, `size` |
+| `badge` | a short label | `color` |
 | `spacer` | | |
 | `divider` | | |
+
+Views can also use `if`, `else if` and `else`. Expressions support `+ - * / %`,
+`== != < <= > >=`, `&& || !`, parentheses, and string interpolation with `\( )`.
 
 Components can also use other components from the same file, like `Price(amount: product.price)`.
 
@@ -92,12 +138,15 @@ Design tokens:
 ```
 Sources/
   LaurCore/      Lexer, syntax tree, parser, checker, printer. No UI code.
-  LaurRuntime/   Interpreter that renders the syntax tree as SwiftUI, plus theme and sample data.
+  LaurRuntime/   Resolver (decides what's on screen and assigns context), evaluator,
+                 SwiftUI renderer, theme and sample data.
   laur/          The command-line tool and the preview window.
 Tests/
-  LaurCoreTests/ Parser and error-message tests.
+  LaurCoreTests/     Parser, expression, checker and error-message tests.
+  LaurRuntimeTests/  Context resolution and evaluation tests.
 Examples/
-  ProductCard/   The first example from the spec.
+  ProductCard/   Example 1 from the spec: a static card.
+  ProductList/   Example 2: a list where each row knows its position.
 ```
 
 The syntax tree in `LaurCore/AST.swift` is the center of everything: the previewer, the
@@ -109,7 +158,7 @@ design bar will read it later.
 Each milestone implements one example from the language spec:
 
 1. ✅ Static components, previews, live reload
-2. Lists and position context (`context.siblings`, `context.reading`, ...)
+2. ✅ Lists, `if`, expressions and position context
 3. State, bindings and actions
 4. Async loading with `load` and `when`
 5. Gates (A/B tests) with automatic exposure logging
