@@ -1,132 +1,132 @@
 import SwiftUI
 import LaurCore
 
-/// Turns a parsed `.laur` component into live SwiftUI views by walking its syntax tree.
+/// Turns a parsed `.laur` component into live SwiftUI views.
 ///
-/// This is the dev-mode interpreter: it's what makes previews reload instantly. Release
-/// builds will compile the same tree to Swift instead, and a shared test suite will check
-/// that both paths render every preview the same way.
+/// This is the dev-mode interpreter: it's what makes previews reload instantly. It works
+/// in two steps: the `Resolver` decides what's on screen and where each component sits,
+/// then this draws the result. Release builds will compile the same tree to Swift, and a
+/// shared test suite will check that both paths render every preview the same way.
 public struct Renderer {
     public var file: SourceFile
     public var theme: Theme
     public var samples: SampleData
+    /// Draws each component's context over it, for checking position logic at a glance.
+    public var showsContext: Bool
 
-    public init(file: SourceFile, theme: Theme = .standard, samples: SampleData = SampleData()) {
+    public init(file: SourceFile, theme: Theme = .standard, samples: SampleData = SampleData(), showsContext: Bool = false) {
         self.file = file
         self.theme = theme
         self.samples = samples
+        self.showsContext = showsContext
     }
 
     /// Renders one named preview of a component.
     public func render(_ component: Component, preview: PreviewBlock) -> AnyView {
-        do {
-            var scope: [String: Value] = [:]
-            for param in component.params {
-                if let entry = preview.entry(param.name) {
-                    scope[param.name] = try samples.resolve(entry.value, type: param.type)
-                } else {
-                    scope[param.name] = .null
-                }
-            }
-            return try body(of: component, scope: scope, depth: 0)
-        } catch {
+        let resolved = Resolver(file: file, samples: samples).resolve(component, preview: preview)
+        return view(for: resolved)
+    }
+
+    // MARK: - Tree
+
+    private func view(for node: ResolvedNode) -> AnyView {
+        switch node {
+        case .failure(let error):
             return AnyView(RenderErrorView(error: error))
+
+        case .component(_, let context, let children):
+            let body = column(children, spacing: 0)
+            guard showsContext else { return body }
+            return AnyView(
+                body
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(Color.purple.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        ContextBadge(context: context)
+                    }
+            )
+
+        case .element(let element, let scope, let children):
+            do {
+                return try build(element, scope: scope, children: children)
+            } catch {
+                return AnyView(RenderErrorView(error: error))
+            }
         }
     }
 
-    // MARK: - Tree walking
-
-    private func body(of component: Component, scope: [String: Value], depth: Int) throws -> AnyView {
-        guard depth < 64 else {
-            throw RuntimeError("components are nested more than 64 levels deep; is one containing itself?", at: component.nameRange)
-        }
-        let nodes = component.view ?? []
-        if nodes.count == 1 {
-            return view(for: nodes[0], scope: scope, depth: depth)
+    private func column(_ children: [ResolvedNode], spacing: CGFloat) -> AnyView {
+        if children.count == 1 {
+            return view(for: children[0])
         }
         return AnyView(
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(nodes.enumerated()), id: \.offset) { _, node in
-                    view(for: node, scope: scope, depth: depth)
+            VStack(alignment: .leading, spacing: spacing) {
+                ForEach(Array(children.enumerated()), id: \.offset) { _, child in
+                    view(for: child)
                 }
             }
         )
     }
 
-    /// Renders a node, showing an inline error in place of anything that fails so one
-    /// mistake doesn't blank the whole preview.
-    private func view(for node: Node, scope: [String: Value], depth: Int) -> AnyView {
-        do {
-            return try build(node, scope: scope, depth: depth)
-        } catch {
-            return AnyView(RenderErrorView(error: error))
-        }
-    }
-
-    private func build(_ node: Node, scope: [String: Value], depth: Int) throws -> AnyView {
-        switch node.name {
-        case "stack": return try stack(node, scope: scope, depth: depth)
-        case "text": return try text(node, scope: scope)
-        case "image": return try image(node, scope: scope)
+    private func build(_ element: Element, scope: Scope, children: [ResolvedNode]) throws -> AnyView {
+        switch element.name {
+        case "stack": return try stack(element, children: children)
+        case "list":
+            let spacing = try length(element.argument("spacing"), in: theme.spacing) ?? 0
+            return column(children, spacing: spacing)
+        case "text": return try text(element, scope: scope)
+        case "image": return try image(element, scope: scope)
+        case "badge": return try badge(element, scope: scope)
         case "spacer": return AnyView(Spacer(minLength: 0))
         case "divider": return AnyView(Divider())
         default:
-            guard let target = file.component(named: node.name) else {
-                throw RuntimeError("unknown element `\(node.name)`", at: node.nameRange)
-            }
-            var inner: [String: Value] = [:]
-            for param in target.params {
-                if let argument = node.argument(param.name) {
-                    inner[param.name] = try evaluate(argument.value, scope: scope)
-                } else {
-                    inner[param.name] = .null
-                }
-            }
-            return try body(of: target, scope: inner, depth: depth + 1)
+            throw RuntimeError("unknown element `\(element.name)`", at: element.nameRange)
         }
     }
 
     // MARK: - Primitives
 
-    private func stack(_ node: Node, scope: [String: Value], depth: Int) throws -> AnyView {
-        let horizontal = node.positional.first?.value.tokenName == "horizontal"
-        let spacing = try length(node.argument("spacing"), in: theme.spacing) ?? theme.spacing["sm"] ?? 8
-        let alignment = node.argument("alignment")?.value.tokenName
-        let children = Array((node.children ?? []).enumerated())
+    private func stack(_ element: Element, children: [ResolvedNode]) throws -> AnyView {
+        let horizontal = element.positional.first?.value.tokenName == "horizontal"
+        let spacing = try length(element.argument("spacing"), in: theme.spacing) ?? theme.spacing["sm"] ?? 8
+        let alignment = element.argument("alignment")?.value.tokenName
+        let items = Array(children.enumerated())
 
         let content: AnyView
         if horizontal {
             let vertical: VerticalAlignment = alignment == "leading" ? .top : alignment == "trailing" ? .bottom : .center
             content = AnyView(HStack(alignment: vertical, spacing: spacing) {
-                ForEach(children, id: \.offset) { _, child in view(for: child, scope: scope, depth: depth) }
+                ForEach(items, id: \.offset) { _, child in view(for: child) }
             })
         } else {
             let horizontalAlignment: HorizontalAlignment = alignment == "center" ? .center : alignment == "trailing" ? .trailing : .leading
             content = AnyView(VStack(alignment: horizontalAlignment, spacing: spacing) {
-                ForEach(children, id: \.offset) { _, child in view(for: child, scope: scope, depth: depth) }
+                ForEach(items, id: \.offset) { _, child in view(for: child) }
             })
         }
 
         var result = content
-        if let padding = try length(node.argument("padding"), in: theme.spacing) {
+        if let padding = try length(element.argument("padding"), in: theme.spacing) {
             result = AnyView(result.padding(padding))
         }
-        if let name = node.argument("background")?.value.tokenName, let color = theme.colors[name] {
+        if let name = element.argument("background")?.value.tokenName, let color = theme.colors[name] {
             result = AnyView(result.background(color))
         }
-        if let radius = try length(node.argument("corner"), in: theme.corners) {
+        if let radius = try length(element.argument("corner"), in: theme.corners) {
             result = AnyView(result.clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous)))
         }
         return result
     }
 
-    private func text(_ node: Node, scope: [String: Value]) throws -> AnyView {
-        guard let first = node.positional.first else {
-            throw RuntimeError("`text` needs a value", at: node.nameRange)
+    private func text(_ element: Element, scope: Scope) throws -> AnyView {
+        guard let first = element.positional.first else {
+            throw RuntimeError("`text` needs a value", at: element.nameRange)
         }
-        let value = try evaluate(first.value, scope: scope)
-        let font = node.argument("style")?.value.tokenName.flatMap { theme.fonts[$0] } ?? theme.fonts["body"] ?? .body
-        let color = node.argument("color")?.value.tokenName.flatMap { theme.colors[$0] } ?? .primary
+        let value = try Evaluator.evaluate(first.value, in: scope)
+        let font = element.argument("style")?.value.tokenName.flatMap { theme.fonts[$0] } ?? theme.fonts["body"] ?? .body
+        let color = element.argument("color")?.value.tokenName.flatMap { theme.colors[$0] } ?? .primary
         return AnyView(
             Text(value.description)
                 .font(font)
@@ -135,11 +135,27 @@ public struct Renderer {
         )
     }
 
-    private func image(_ node: Node, scope: [String: Value]) throws -> AnyView {
-        guard let first = node.positional.first else {
-            throw RuntimeError("`image` needs a URL or a symbol name", at: node.nameRange)
+    private func badge(_ element: Element, scope: Scope) throws -> AnyView {
+        guard let first = element.positional.first else {
+            throw RuntimeError("`badge` needs a label", at: element.nameRange)
         }
-        let source = try evaluate(first.value, scope: scope).description
+        let value = try Evaluator.evaluate(first.value, in: scope)
+        let color = element.argument("color")?.value.tokenName.flatMap { theme.colors[$0] } ?? theme.colors["accent"] ?? .accentColor
+        return AnyView(
+            Text(value.description)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(color)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(color.opacity(0.14), in: Capsule())
+        )
+    }
+
+    private func image(_ element: Element, scope: Scope) throws -> AnyView {
+        guard let first = element.positional.first else {
+            throw RuntimeError("`image` needs a URL or a symbol name", at: element.nameRange)
+        }
+        let source = try Evaluator.evaluate(first.value, in: scope).description
         let surface = theme.colors["surface"] ?? Color.gray.opacity(0.12)
 
         let picture: AnyView
@@ -163,9 +179,9 @@ public struct Renderer {
             )
         }
 
-        let size = node.argument("size")?.value.tokenName.flatMap { theme.imageSizes[$0] }
+        let size = element.argument("size")?.value.tokenName.flatMap { theme.imageSizes[$0] }
         var ratio: CGFloat?
-        switch node.argument("aspect")?.value.tokenName {
+        switch element.argument("aspect")?.value.tokenName {
         case "square": ratio = 1
         case "wide": ratio = 16.0 / 9.0
         case "tall": ratio = 3.0 / 4.0
@@ -187,37 +203,13 @@ public struct Renderer {
         if let size {
             result = AnyView(result.frame(width: size))
         }
-        if let radius = try length(node.argument("corner"), in: theme.corners) {
+        if let radius = try length(element.argument("corner"), in: theme.corners) {
             result = AnyView(result.clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous)))
         }
         return result
     }
 
     // MARK: - Values
-
-    private func evaluate(_ expr: Expr, scope: [String: Value]) throws -> Value {
-        switch expr.kind {
-        case .string(let s): return .string(s)
-        case .number(let n): return .number(n)
-        case .bool(let b): return .bool(b)
-        case .token(let name, _): return .token(name)
-        case .path(let path):
-            guard var value = scope[path[0]] else {
-                throw RuntimeError("`\(path[0])` isn't defined", at: expr.range)
-            }
-            for field in path.dropFirst() {
-                guard case .record(let fields) = value else {
-                    throw RuntimeError("`\(field)` can't be read from \(value == .null ? "an empty value" : "`\(value)`")", at: expr.range)
-                }
-                guard let next = fields[field] else {
-                    let known = fields.keys.sorted().map { "`\($0)`" }.joined(separator: ", ")
-                    throw RuntimeError("the sample has no field `\(field)` (it has \(known))", at: expr.range)
-                }
-                value = next
-            }
-            return value
-        }
-    }
 
     /// A token from `table`, or a raw number of points.
     private func length(_ argument: Argument?, in table: [String: CGFloat]) throws -> CGFloat? {
@@ -232,6 +224,23 @@ public struct Renderer {
         default:
             throw RuntimeError("expected a token like `.md`", at: argument.value.range)
         }
+    }
+}
+
+/// The label drawn on each component when "Show context" is on.
+struct ContextBadge: View {
+    let context: ContextInfo
+
+    var body: some View {
+        let reading = context.readingCount.map { "\(context.readingIndex + 1)/\($0)" } ?? "\(context.readingIndex + 1)"
+        Text("\(context.type)  sib \(context.siblingIndex + 1)/\(context.siblingCount) · read \(reading) · d\(context.depth)")
+            .font(.system(size: 9, weight: .medium, design: .monospaced))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(Color.purple.opacity(0.85), in: RoundedRectangle(cornerRadius: 3))
+            .offset(y: -8)
+            .help(context.path)
     }
 }
 
