@@ -24,6 +24,8 @@ final class Workspace: ObservableObject {
     @Published private(set) var samplesError: String?
     @Published private(set) var lastReload = Date()
     @Published var selection: PreviewID?
+    /// The previewed screen's `state` values. Kept across reloads, reset per preview.
+    let state = StateStore()
 
     private var fileStamp: Date?
     private var samplesStamp: Date?

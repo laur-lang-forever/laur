@@ -38,6 +38,11 @@ struct PreviewerView: View {
         } detail: {
             detail
         }
+        // Each preview starts fresh. Editing the file keeps state, so you don't lose
+        // what you typed on every save.
+        .onChange(of: workspace.selection) { _, _ in
+            workspace.state.reset()
+        }
     }
 
     // MARK: - Sidebar
@@ -95,6 +100,8 @@ struct PreviewerView: View {
                             .frame(maxWidth: 390, alignment: .leading)
                     }
                     phone
+                    StateBar(state: workspace.state)
+                        .frame(width: 390)
                 }
                 .padding(32)
                 .frame(maxWidth: .infinity)
@@ -110,9 +117,15 @@ struct PreviewerView: View {
                let selection = workspace.selection,
                let component = file.component(named: selection.component),
                let preview = component.preview(named: selection.preview) {
-                Renderer(file: file, samples: workspace.samples, showsContext: showsContext)
-                    .render(component, preview: preview)
-                    .padding(16)
+                PhoneScreen(
+                    file: file,
+                    component: component,
+                    preview: preview,
+                    samples: workspace.samples,
+                    showsContext: showsContext,
+                    state: workspace.state
+                )
+                .padding(16)
                     .frame(width: 390, alignment: .topLeading)
                     .frame(minHeight: 200, alignment: .top)
             } else {
@@ -152,5 +165,39 @@ struct PreviewerView: View {
     private var selectedComponent: Component? {
         guard let selection = workspace.selection else { return nil }
         return workspace.lastGood?.component(named: selection.component)
+    }
+}
+
+/// The rendered preview. Watches the state so typing and tapping redraw it.
+struct PhoneScreen: View {
+    let file: SourceFile
+    let component: Component
+    let preview: PreviewBlock
+    let samples: SampleData
+    let showsContext: Bool
+    @ObservedObject var state: StateStore
+
+    var body: some View {
+        Renderer(file: file, samples: samples, state: state, showsContext: showsContext)
+            .render(component, preview: preview)
+    }
+}
+
+/// Under the preview: what went wrong in the last action, and a way to start over.
+struct StateBar: View {
+    @ObservedObject var state: StateStore
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            if let error = state.lastError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.red)
+            }
+            Spacer()
+            Button("Reset state") { state.reset() }
+                .controlSize(.small)
+                .help("Put every state value back to where the preview starts")
+        }
     }
 }
