@@ -47,6 +47,12 @@ each component knows about its position:
 swift run laur preview Examples/ProductList/ProductList.laur
 ```
 
+For a fuller picture of what components can look like, open the storefront showcase:
+
+```sh
+swift run laur preview Examples/Showcase/Showcase.laur
+```
+
 Other commands:
 
 ```sh
@@ -110,7 +116,7 @@ A preview can place a component anywhere with `context: .siblings(2, of: 5)` or
 | Element | Unlabeled argument | Labeled arguments |
 | --- | --- | --- |
 | `stack` | `.vertical` or `.horizontal` | `spacing`, `padding`, `alignment`, `background`, `corner` |
-| `list` | a collection; the block names each item: `list(products) { product in ... }` | `spacing` |
+| `list` | a collection; the block names each item: `list(products) { product in ... }` | `axis`, `spacing` |
 | `text` | the value to show | `style`, `color` |
 | `image` | URL or symbol name | `aspect`, `corner`, `size` |
 | `badge` | a short label | `color` |
@@ -128,7 +134,7 @@ Design tokens:
 | --- | --- |
 | spacing | `.none` `.xs` `.sm` `.md` `.lg` `.xl` |
 | text style | `.largeTitle` `.title` `.headline` `.body` `.callout` `.caption` `.footnote` |
-| color | `.primary` `.secondary` `.tertiary` `.accent` `.error` `.success` `.surface` |
+| color | `.primary` `.secondary` `.tertiary` `.accent` `.error` `.success` `.warning` `.surface` `.inverse` |
 | corner | `.none` `.sm` `.md` `.lg` `.full` |
 | aspect | `.square` `.wide` `.tall` `.fit` |
 | image size | `.thumbnail` `.small` `.medium` `.large` |
@@ -147,6 +153,7 @@ Tests/
 Examples/
   ProductCard/   Example 1 from the spec: a static card.
   ProductList/   Example 2: a list where each row knows its position.
+  Showcase/      A storefront built from five differently styled cards and lists.
 ```
 
 The syntax tree in `LaurCore/AST.swift` is the center of everything: the previewer, the
