@@ -10,6 +10,8 @@ public indirect enum Value: Equatable, CustomStringConvertible {
     /// A record with named fields, such as a sample `Product`.
     case record([String: Value])
     case list([Value])
+    /// The value of `context` inside a component.
+    case context(ContextInfo)
     case null
 
     /// How the value reads when shown with `text(...)`.
@@ -21,6 +23,7 @@ public indirect enum Value: Equatable, CustomStringConvertible {
         case .token(let t): return ".\(t)"
         case .record(let fields): return "{" + fields.keys.sorted().joined(separator: ", ") + "}"
         case .list(let items): return "[\(items.count) items]"
+        case .context: return "context"
         case .null: return ""
         }
     }
@@ -112,6 +115,9 @@ public struct SampleData {
         case .bool(let b): return .bool(b)
         case .path:
             throw RuntimeError("previews take fixed values, not properties", at: expr.range)
+        case .unary, .binary, .interpolation:
+            // Fixed values written with operators, like `-1` or `"a" + "b"`.
+            return try Evaluator.evaluate(expr, in: [:])
         case .token(let name, let arguments):
             let typeName = type.baseName
             switch name {
