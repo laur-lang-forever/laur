@@ -1,0 +1,9 @@
+{
+  "Product": [
+    { "name": "Canvas Tote", "price": "$48.00", "photo": "bag.fill" },
+    { "name": "Trail Runner", "price": "$120.00", "photo": "shoe.fill" },
+    { "name": "Desk Lamp", "price": "$64.00", "photo": "lamp.desk.fill" },
+    { "name": "Wool Beanie", "price": "$28.00", "photo": "snowflake" },
+    { "name": "Water Bottle", "price": "$32.00", "photo": "drop.fill" }
+  ]
+}

@@ -1,0 +1,36 @@
+import Models.Product
+
+component ProductList(products: [Product]) {
+  intent "Show products as a ranked list, highlighting the top pick"
+
+  view {
+    list(products) { product in
+      ProductRow(product: product)
+    }
+  }
+
+  preview "three items" { products: .samples(3) }
+  preview "five items"  { products: .samples(5) }
+}
+
+component ProductRow(product: Product) {
+  intent "One ranked row; knows its own position without being told"
+
+  view {
+    stack(.horizontal, spacing: .sm, padding: .md) {
+      if context.siblings.isFirst {
+        badge("Top pick")
+      }
+      text(product.name, style: .headline)
+      spacer()
+      text("#\(context.siblings.index + 1) of \(context.siblings.count)", color: .tertiary)
+    }
+    if !context.siblings.isLast {
+      divider()
+    }
+  }
+
+  preview "first"  { product: .sample, context: .siblings(0, of: 5) }
+  preview "middle" { product: .sample, context: .siblings(2, of: 5) }
+  preview "last"   { product: .sample, context: .siblings(4, of: 5) }
+}
