@@ -30,6 +30,7 @@ struct PreviewerApp: App {
 
 struct PreviewerView: View {
     @ObservedObject var workspace: Workspace
+    @AppStorage("showsContext") private var showsContext = false
 
     var body: some View {
         NavigationSplitView {
@@ -56,16 +57,24 @@ struct PreviewerView: View {
         }
         .navigationSplitViewColumnWidth(min: 180, ideal: 220)
         .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(workspace.hasErrors ? Color.red : Color.green)
-                    .frame(width: 8, height: 8)
-                Text(workspace.hasErrors ? "Errors" : "Up to date")
-                Spacer()
-                Text(workspace.lastReload, style: .time)
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 10) {
+                // In the window itself rather than the toolbar, which a command-line app's
+                // window doesn't always show.
+                Toggle("Show context", isOn: $showsContext)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .help("Outline each component and show its siblings, reading order and depth")
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(workspace.hasErrors ? Color.red : Color.green)
+                        .frame(width: 8, height: 8)
+                    Text(workspace.hasErrors ? "Errors" : "Up to date")
+                    Spacer()
+                    Text(workspace.lastReload, style: .time)
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption)
             }
-            .font(.caption)
             .padding(10)
         }
     }
@@ -101,7 +110,7 @@ struct PreviewerView: View {
                let selection = workspace.selection,
                let component = file.component(named: selection.component),
                let preview = component.preview(named: selection.preview) {
-                Renderer(file: file, samples: workspace.samples)
+                Renderer(file: file, samples: workspace.samples, showsContext: showsContext)
                     .render(component, preview: preview)
                     .padding(16)
                     .frame(width: 390, alignment: .topLeading)
