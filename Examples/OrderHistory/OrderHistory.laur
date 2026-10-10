@@ -1,0 +1,74 @@
+// Example 4 from the spec: loading data, with every outcome handled.
+// The "live" preview simulates a real request: watch it load, then show samples.json.
+// The others pin one outcome. In "offline", press Try again to watch it recover.
+
+service Orders {
+  fetch(userId: String) -> [Order]
+}
+
+component OrderHistory(userId: String) {
+  intent "Show someone their past orders, and what to do when that fails"
+
+  load orders = Orders.fetch(userId: userId)
+
+  view {
+    stack(.vertical, spacing: .md, padding: .md) {
+      text("Your orders", style: .title)
+      when orders {
+        loading {
+          spinner()
+          text("Loading your orders…", style: .caption, color: .secondary)
+        }
+        failed(error) {
+          if error.kind == .network {
+            text("You're offline", style: .headline)
+          } else if error.kind == .unauthorized {
+            text("Please sign in again", style: .headline)
+          } else {
+            text("Couldn't load your orders", style: .headline)
+          }
+          text(error.message, style: .caption, color: .secondary)
+          button("Try again") { orders.reload() }
+        }
+        loaded(items) {
+          if items.isEmpty {
+            text("No orders yet", color: .secondary)
+          } else {
+            text("\(items.count) orders", style: .caption, color: .secondary)
+            list(items, spacing: .sm) { order in
+              OrderRow(order: order)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  preview "live"    { userId: "u_1" }
+  preview "loading" { userId: "u_1", orders: .loading }
+  preview "offline" { userId: "u_1", orders: .failed(.network) }
+  preview "server"  { userId: "u_1", orders: .failed(.server, "Our servers are having a moment.") }
+  preview "loaded"  { userId: "u_1", orders: .loaded(.samples(3)) }
+  preview "empty"   { userId: "u_1", orders: .loaded([]) }
+}
+
+component OrderRow(order: Order) {
+  view {
+    stack(.horizontal, spacing: .md, padding: .sm, background: .surface, corner: .md) {
+      image(order.photo, size: .thumbnail, corner: .sm)
+      stack(.vertical, spacing: .xs) {
+        text(order.name, style: .headline)
+        text("Ordered \(order.date) · \(order.total)", style: .caption, color: .secondary)
+      }
+      spacer()
+      if order.status == "Delivered" {
+        badge(order.status, color: .success)
+      } else {
+        badge(order.status, color: .warning)
+      }
+    }
+  }
+
+  preview "delivered" { order: .sample }
+  preview "on the way" { order: .sample(status: "On the way") }
+}

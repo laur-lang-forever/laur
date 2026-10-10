@@ -1,0 +1,8 @@
+{
+  "Order": [
+    { "name": "Weekend Duffel", "photo": "duffle.bag.fill", "date": "Oct 2", "total": "$148", "status": "Delivered" },
+    { "name": "Trail Runner", "photo": "shoe.fill", "date": "Oct 6", "total": "$120", "status": "On the way" },
+    { "name": "Desk Lamp", "photo": "lamp.desk.fill", "date": "Sep 21", "total": "$64", "status": "Delivered" },
+    { "name": "Camp Mug", "photo": "cup.and.saucer.fill", "date": "Sep 9", "total": "$18", "status": "Delivered" }
+  ]
+}
