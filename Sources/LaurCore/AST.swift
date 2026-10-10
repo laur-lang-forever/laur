@@ -4,16 +4,56 @@
 
 public struct SourceFile: Equatable, Sendable {
     public var imports: [ImportDecl]
+    public var services: [ServiceDecl]
     public var components: [Component]
 
-    public init(imports: [ImportDecl] = [], components: [Component] = []) {
+    public init(imports: [ImportDecl] = [], services: [ServiceDecl] = [], components: [Component] = []) {
         self.imports = imports
+        self.services = services
         self.components = components
     }
 
     public func component(named name: String) -> Component? {
         components.first { $0.name == name }
     }
+
+    public func service(named name: String) -> ServiceDecl? {
+        services.first { $0.name == name }
+    }
+}
+
+/// Declares Swift functions Laur can call, so the checker knows their names, arguments
+/// and results. Previews simulate them with sample data; compiled apps call the real ones.
+///
+///     service Orders {
+///       fetch(userId: String) -> [Order]
+///     }
+public struct ServiceDecl: Equatable, Sendable {
+    public var name: String
+    public var nameRange: SourceRange
+    public var functions: [ServiceFunction]
+    public var range: SourceRange
+
+    public func function(named name: String) -> ServiceFunction? {
+        functions.first { $0.name == name }
+    }
+}
+
+public struct ServiceFunction: Equatable, Sendable {
+    public var name: String
+    public var nameRange: SourceRange
+    public var params: [Param]
+    public var returns: TypeRef
+    public var range: SourceRange
+}
+
+/// `load orders = Orders.fetch(userId: userId)`: starts when the component appears.
+/// The view reads it with `when orders { loading {...} failed(e) {...} loaded(x) {...} }`.
+public struct LoadDecl: Equatable, Sendable {
+    public var name: String
+    public var nameRange: SourceRange
+    public var call: Expr
+    public var range: SourceRange
 }
 
 /// `import Models.Product`
@@ -33,6 +73,8 @@ public struct Component: Equatable, Sendable {
     public var states: [StateDecl] = []
     /// `derived canSubmit = ...`, in declaration order (each can use the ones before it).
     public var derived: [DerivedDecl] = []
+    /// `load orders = Orders.fetch(...)`
+    public var loads: [LoadDecl] = []
     /// `action submit() { ... }`
     public var actions: [ActionDecl] = []
     /// Top-level nodes of the `view { ... }` block, or nil when the component has none.
@@ -50,6 +92,10 @@ public struct Component: Equatable, Sendable {
 
     public func action(named name: String) -> ActionDecl? {
         actions.first { $0.name == name }
+    }
+
+    public func load(named name: String) -> LoadDecl? {
+        loads.first { $0.name == name }
     }
 
     public func preview(named name: String) -> PreviewBlock? {
@@ -88,6 +134,8 @@ public indirect enum Statement: Equatable, Sendable {
     case assign(target: String, targetRange: SourceRange, op: String, value: Expr)
     /// `submit()`
     case call(name: String, range: SourceRange)
+    /// `orders.reload()`
+    case reload(name: String, range: SourceRange)
     /// `if a { ... } else if b { ... } else { ... }`
     case conditional(branches: [StatementBranch], otherwise: [Statement]?, range: SourceRange)
 
@@ -95,6 +143,7 @@ public indirect enum Statement: Equatable, Sendable {
         switch self {
         case .assign(_, let targetRange, _, let value): return targetRange.union(value.range)
         case .call(_, let range): return range
+        case .reload(_, let range): return range
         case .conditional(_, _, let range): return range
         }
     }
@@ -154,11 +203,13 @@ public indirect enum TypeRef: Equatable, Sendable, CustomStringConvertible {
 public indirect enum Node: Equatable, Sendable {
     case element(Element)
     case conditional(Conditional)
+    case when(When)
 
     public var range: SourceRange {
         switch self {
         case .element(let element): return element.range
         case .conditional(let conditional): return conditional.range
+        case .when(let when): return when.range
         }
     }
 
@@ -195,6 +246,27 @@ public struct Element: Equatable, Sendable {
 public struct Binding: Equatable, Sendable {
     public var name: String
     public var range: SourceRange
+}
+
+/// `when orders { loading { ... } failed(error) { ... } loaded(items) { ... } }`
+public struct When: Equatable, Sendable {
+    public struct Branch: Equatable, Sendable {
+        /// `loading`, `failed` or `loaded`.
+        public var kind: String
+        public var kindRange: SourceRange
+        /// The name in `failed(error)` or `loaded(items)`.
+        public var binding: Binding?
+        public var body: [Node]
+    }
+
+    public var subject: String
+    public var subjectRange: SourceRange
+    public var branches: [Branch]
+    public var range: SourceRange
+
+    public func branch(_ kind: String) -> Branch? {
+        branches.first { $0.kind == kind }
+    }
 }
 
 /// `if a { ... } else if b { ... } else { ... }`
@@ -239,6 +311,8 @@ public struct Expr: Equatable, Sendable {
         case bind(String)
         /// `email.contains("@")`: a built-in method on a value.
         case method(receiver: Expr, name: String, arguments: [Argument])
+        /// `[1, 2, 3]`, `[]`
+        case list([Expr])
     }
 
     public enum InterpolationPart: Equatable, Sendable {
@@ -275,6 +349,7 @@ public struct Expr: Equatable, Sendable {
         case .bind(let name): return [([name], range)]
         case .method(let receiver, _, let arguments):
             return receiver.paths + arguments.flatMap { $0.value.paths }
+        case .list(let items): return items.flatMap(\.paths)
         case .string, .number, .bool: return []
         }
     }
