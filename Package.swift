@@ -20,9 +20,10 @@ let package = Package(
         // and the iOS Simulator previewer later.
         .target(name: "LaurRuntime", dependencies: ["LaurCore"]),
 
-        // The `laur` command: `laur check`, `laur parse`, `laur preview`.
+        // The `laur` command: `laur preview`, `laur check`, `laur fmt`.
         .executableTarget(name: "laur", dependencies: ["LaurCore", "LaurRuntime"]),
 
         .testTarget(name: "LaurCoreTests", dependencies: ["LaurCore"]),
+        .testTarget(name: "LaurRuntimeTests", dependencies: ["LaurCore", "LaurRuntime"]),
     ]
 )
