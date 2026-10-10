@@ -41,7 +41,7 @@ A preview window opens with each component's previews in the sidebar. Edit
 second. Mistakes show up as readable errors above the preview, which keeps showing the
 last version that worked.
 
-Try the second example too, and turn on **Show context** in the toolbar to see what
+Try the second example too, and turn on **Show context** in the sidebar to see what
 each component knows about its position:
 
 ```sh
