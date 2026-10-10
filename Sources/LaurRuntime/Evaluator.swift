@@ -1,3 +1,4 @@
+import Foundation
 import LaurCore
 
 /// Names visible while evaluating: parameters, list items, and `context`.
@@ -14,6 +15,14 @@ public enum Evaluator {
 
         case .path(let path):
             return try lookup(path, in: scope, at: expr.range)
+
+        case .bind(let name):
+            return try lookup([name], in: scope, at: expr.range)
+
+        case .method(let receiverExpr, let name, let arguments):
+            let receiver = try evaluate(receiverExpr, in: scope)
+            let values = try arguments.map { try evaluate($0.value, in: scope) }
+            return try callMethod(name, on: receiver, with: values, at: expr.range)
 
         case .interpolation(let parts):
             var text = ""
@@ -75,6 +84,10 @@ public enum Evaluator {
             return try context.value(group: path[1], field: path[2], at: range)
         }
         for field in path.dropFirst() {
+            if let builtIn = property(field, of: value) {
+                value = builtIn
+                continue
+            }
             guard case .record(let fields) = value else {
                 throw RuntimeError("`\(field)` can't be read from \(value == .null ? "an empty value" : "`\(value)`")", at: range)
             }
@@ -85,6 +98,32 @@ public enum Evaluator {
             value = next
         }
         return value
+    }
+
+    /// `count` and `isEmpty` on strings and lists.
+    private static func property(_ name: String, of value: Value) -> Value? {
+        switch (name, value) {
+        case ("count", .string(let s)): return .number(Double(s.count))
+        case ("count", .list(let items)): return .number(Double(items.count))
+        case ("isEmpty", .string(let s)): return .bool(s.isEmpty)
+        case ("isEmpty", .list(let items)): return .bool(items.isEmpty)
+        default: return nil
+        }
+    }
+
+    private static func callMethod(_ name: String, on receiver: Value, with arguments: [Value], at range: SourceRange) throws -> Value {
+        switch (name, receiver, arguments.first) {
+        case ("contains", .string(let s), .string(let part)?): return .bool(s.contains(part))
+        case ("contains", .list(let items), let item?): return .bool(items.contains(item))
+        case ("hasPrefix", .string(let s), .string(let part)?): return .bool(s.hasPrefix(part))
+        case ("hasSuffix", .string(let s), .string(let part)?): return .bool(s.hasSuffix(part))
+        case ("lowercased", .string(let s), nil): return .string(s.lowercased())
+        case ("uppercased", .string(let s), nil): return .string(s.uppercased())
+        case ("trimmed", .string(let s), nil): return .string(s.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            let args = arguments.map { "`\($0)`" }.joined(separator: ", ")
+            throw RuntimeError("can't call `\(name)(\(args))` on `\(receiver)`", at: range)
+        }
     }
 
     private static func apply(_ op: String, _ left: Value, _ right: Value, at range: SourceRange) throws -> Value {

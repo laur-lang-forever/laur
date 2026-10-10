@@ -113,7 +113,7 @@ public struct SampleData {
         case .string(let s): return .string(s)
         case .number(let n): return .number(n)
         case .bool(let b): return .bool(b)
-        case .path:
+        case .path, .bind, .method:
             throw RuntimeError("previews take fixed values, not properties", at: expr.range)
         case .unary, .binary, .interpolation:
             // Fixed values written with operators, like `-1` or `"a" + "b"`.
