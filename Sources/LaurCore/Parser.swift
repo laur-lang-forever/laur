@@ -1,24 +1,28 @@
 /// A hand-written recursive-descent parser for `.laur` files.
 ///
-/// Milestone 1 grammar:
+/// Grammar so far:
 ///
-///     file       := (import | component)*
-///     import     := "import" name ("." name)*
-///     component  := "component" Name ("(" params? ")")? "{" member* "}"
-///     param      := name ":" type
-///     type       := "[" type "]" "?"?  |  name ("." name)* "?"?
-///     member     := "intent" string  |  "view" block  |  "preview" string "{" entry* "}"
-///     block      := "{" node* "}"
-///     node       := name "(" args? ")" block?
-///     args       := arg ("," arg)* ","?
-///     arg        := (name ":")? expr
-///     expr       := string | number | "true" | "false"
-///                 | "." name ("(" args? ")")?
-///                 | name ("." name)*
-///     entry      := name ":" expr ","?
+///     file        := (import | component)*
+///     import      := "import" name ("." name)*
+///     component   := "component" Name ("(" params? ")")? "{" member* "}"
+///     param       := name ":" type
+///     type        := "[" type "]" "?"?  |  name ("." name)* "?"?
+///     member      := "intent" string  |  "view" block  |  "preview" string "{" entry* "}"
+///     block       := "{" (name "in")? node* "}"
+///     node        := element | conditional
+///     element     := name "(" args? ")" block?
+///     conditional := "if" expr block ("else" "if" expr block)* ("else" block)?
+///     args        := arg ("," arg)* ","?
+///     arg         := (name ":")? expr
+///     expr        := unary (binop unary)*          precedence: || && (== !=) (< <= > >=) (+ -) (* / %)
+///     unary       := ("!" | "-") unary | primary
+///     primary     := string | number | "true" | "false" | "(" expr ")"
+///                  | "." name ("(" args? ")")?
+///                  | name ("." name)*
+///     entry       := name ":" expr ","?
 ///
-/// Parsing stops at the first error, which is reported with the exact location and,
-/// where it helps, where an unclosed block was opened.
+/// Strings can contain `\( expr )`. Parsing stops at the first error, which is reported
+/// with the exact location and, where it helps, where an unclosed block was opened.
 public struct Parser {
     private var tokens: [Token]
     private var index = 0
@@ -37,7 +41,7 @@ public struct Parser {
     // clear "not supported yet" error instead of a confusing syntax error.
     private static let laterTopLevel: Set<String> = ["screen", "gate", "event", "native"]
     private static let laterMembers: Set<String> = ["state", "derived", "load", "action", "on", "slot", "title"]
-    private static let laterNodes: Set<String> = ["if", "when", "switch", "list"]
+    private static let laterNodes: Set<String> = ["when", "switch"]
     private static let memberKeywords: Set<String> = ["view", "preview", "intent"]
 
     // MARK: - File
@@ -227,7 +231,26 @@ public struct Parser {
     // MARK: - View nodes
 
     private mutating func parseBlock(owner: String) throws -> [Node] {
+        let (binding, nodes) = try parseBlockBody(owner: owner)
+        if let binding {
+            throw error(
+                "only `list` blocks name their items",
+                at: binding.range,
+                help: ["remove `\(binding.name) in`"]
+            )
+        }
+        return nodes
+    }
+
+    /// Parses `{ ... }`, including an optional `name in` at the start.
+    private mutating func parseBlockBody(owner: String) throws -> (Binding?, [Node]) {
         let open = try expect(.leftBrace, "`{` to start the `\(owner)` block")
+        var binding: Binding?
+        if case .identifier(let name) = current.kind, peekKind(1) == .identifier("in") {
+            binding = Binding(name: name, range: current.range)
+            advance()
+            advance()
+        }
         var nodes: [Node] = []
         while !check(.rightBrace) {
             if check(.endOfFile) {
@@ -240,13 +263,19 @@ public struct Parser {
             nodes.append(try parseNode())
         }
         advance()
-        return nodes
+        return (binding, nodes)
     }
 
     private mutating func parseNode() throws -> Node {
         let token = current
         guard case .identifier(let name) = token.kind else {
             throw error("expected an element like `text(...)`, found \(token.kind.display)", at: token.range)
+        }
+        if name == "if" {
+            return .conditional(try parseConditional())
+        }
+        if name == "else" {
+            throw error("`else` without an `if` before it", at: token.range)
         }
         if Self.laterNodes.contains(name) {
             throw notYet(name, at: token.range)
@@ -260,17 +289,41 @@ public struct Parser {
             )
         }
         let arguments = try parseArguments(owner: name)
+        var binding: Binding?
         var children: [Node]?
         if check(.leftBrace) {
-            children = try parseBlock(owner: name)
+            let body = try parseBlockBody(owner: name)
+            binding = body.0
+            children = body.1
         }
-        return Node(
+        return .element(Element(
             name: name,
             nameRange: token.range,
             arguments: arguments,
+            binding: binding,
             children: children,
             range: token.range.union(previous.range)
-        )
+        ))
+    }
+
+    private mutating func parseConditional() throws -> Conditional {
+        let start = advance() // `if`
+        var branches: [Conditional.Branch] = []
+        var otherwise: [Node]?
+        while true {
+            let condition = try parseExpr()
+            let body = try parseBlock(owner: "if")
+            branches.append(Conditional.Branch(condition: condition, body: body))
+            guard case .identifier("else") = current.kind else { break }
+            advance()
+            if case .identifier("if") = current.kind {
+                advance()
+                continue
+            }
+            otherwise = try parseBlock(owner: "else")
+            break
+        }
+        return Conditional(branches: branches, otherwise: otherwise, range: start.range.union(previous.range))
     }
 
     /// Parses `( ... )`, starting at the `(`.
@@ -309,15 +362,69 @@ public struct Parser {
 
     // MARK: - Expressions
 
-    private mutating func parseExpr() throws -> Expr {
+    /// Binary operators, loosest first. Operators on the same line bind equally and
+    /// group left to right.
+    private static let precedence: [String: Int] = [
+        "||": 1,
+        "&&": 2,
+        "==": 3, "!=": 3,
+        "<": 4, "<=": 4, ">": 4, ">=": 4,
+        "+": 5, "-": 5,
+        "*": 6, "/": 6, "%": 6,
+    ]
+
+    public mutating func parseExpr() throws -> Expr {
+        try parseBinary(minimumPrecedence: 1)
+    }
+
+    private mutating func parseBinary(minimumPrecedence: Int) throws -> Expr {
+        var left = try parseUnary()
+        while case .symbol(let op) = current.kind,
+              let precedence = Self.precedence[op],
+              precedence >= minimumPrecedence {
+            advance()
+            let right = try parseBinary(minimumPrecedence: precedence + 1)
+            left = Expr(.binary(op, left, right), range: left.range.union(right.range))
+        }
+        return left
+    }
+
+    private mutating func parseUnary() throws -> Expr {
+        if case .symbol(let op) = current.kind, op == "!" || op == "-" {
+            let start = advance()
+            let operand = try parseUnary()
+            return Expr(.unary(op, operand), range: start.range.union(operand.range))
+        }
+        return try parsePrimary()
+    }
+
+    private mutating func parsePrimary() throws -> Expr {
         let token = current
         switch token.kind {
         case .string(let text):
             advance()
             return Expr(.string(text), range: token.range)
+        case .interpolated(let parts):
+            advance()
+            var result: [Expr.InterpolationPart] = []
+            for part in parts {
+                switch part {
+                case .text(let text):
+                    result.append(.text(text))
+                case .code(let code, let start):
+                    result.append(.expr(try Self.parseInterpolation(code, start: start, in: token.range)))
+                }
+            }
+            return Expr(.interpolation(result), range: token.range)
         case .number(let value):
             advance()
             return Expr(.number(value), range: token.range)
+        case .leftParen:
+            advance()
+            var inner = try parseExpr()
+            let close = try expect(.rightParen, "`)` to close the parenthesis")
+            inner.range = token.range.union(close.range)
+            return inner
         case .dot:
             advance()
             let (name, nameRange) = try expectIdentifier("a token name after `.`, like `.md`")
@@ -338,7 +445,7 @@ public struct Parser {
                 throw error(
                     "calling functions isn't supported yet",
                     at: current.range,
-                    help: ["milestone 1 supports values, properties like `product.name`, and tokens like `.md`"]
+                    help: ["use values, properties like `product.name`, tokens like `.md`, and operators"]
                 )
             }
             return Expr(.path(path), range: token.range.union(previous.range))
@@ -347,6 +454,20 @@ public struct Parser {
         default:
             throw error("expected a value, found \(token.kind.display)", at: token.range)
         }
+    }
+
+    /// Parses the code inside `\( ... )` as one expression.
+    private static func parseInterpolation(_ code: String, start: SourceLocation, in string: SourceRange) throws -> Expr {
+        let tokens = try Lexer.tokenize(code, startingAt: start)
+        var parser = Parser(tokens: tokens)
+        if parser.check(.endOfFile) {
+            throw Diagnostic(.error, "empty interpolation", at: string, help: ["put a value inside `\\( )`, like `\\(product.name)`"])
+        }
+        let expr = try parser.parseExpr()
+        if !parser.check(.endOfFile) {
+            throw Diagnostic(.error, "expected `)` to end the interpolation, found \(parser.current.kind.display)", at: parser.current.range)
+        }
+        return expr
     }
 
     // MARK: - Token helpers
