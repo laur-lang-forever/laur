@@ -1,0 +1,130 @@
+import Models.Product
+
+// A shop home screen built from five differently styled components that all show the
+// same Product data. Preview "Storefront" and turn on "Show context" to see how each
+// piece knows where it sits.
+
+component Storefront(featured: Product, deals: [Product], bestSellers: [Product]) {
+  intent "A shop home screen: a hero, a shelf of deals, and a ranked list"
+
+  view {
+    stack(.vertical, spacing: .lg) {
+      HeroCard(product: featured)
+      SectionHeader(title: "Today's deals", subtitle: "Ends at midnight")
+      list(deals, axis: .horizontal, spacing: .md) { product in
+        DealTile(product: product)
+      }
+      SectionHeader(title: "Best sellers", subtitle: "Ranked by this week's orders")
+      list(bestSellers) { product in
+        RankedRow(product: product)
+      }
+    }
+  }
+
+  preview "home" { featured: .sample, deals: .samples(4), bestSellers: .samples(5) }
+}
+
+component HeroCard(product: Product) {
+  intent "The one product we most want people to see"
+
+  view {
+    stack(.vertical, spacing: .md, padding: .lg, background: .accent, corner: .lg) {
+      stack(.horizontal) {
+        badge("Featured", color: .inverse)
+        spacer()
+        text("★ \(product.rating)", style: .callout, color: .inverse)
+      }
+      image(product.photo, aspect: .wide, corner: .md)
+      stack(.vertical, spacing: .xs) {
+        text(product.brand, style: .caption, color: .inverse)
+        text(product.name, style: .largeTitle, color: .inverse)
+      }
+      stack(.horizontal, spacing: .sm) {
+        text(product.price, style: .title, color: .inverse)
+        if product.onSale {
+          badge("Sale", color: .inverse)
+        }
+      }
+    }
+  }
+
+  preview "on sale"     { product: .sample }
+  preview "not on sale" { product: .sample(onSale: false) }
+}
+
+component DealTile(product: Product) {
+  intent "A small tile for a horizontal shelf; warns when stock is low"
+
+  view {
+    stack(.vertical, spacing: .sm, padding: .sm, background: .surface, corner: .md) {
+      image(product.photo, size: .small, corner: .sm)
+      text(product.name, style: .callout)
+      text(product.price, style: .headline)
+      if product.stock < 5 {
+        badge("Only \(product.stock) left", color: .error)
+      } else if product.onSale {
+        badge("Sale", color: .success)
+      } else {
+        badge("In stock", color: .secondary)
+      }
+    }
+  }
+
+  preview "on sale"   { product: .sample }
+  preview "low stock" { product: .sample(stock: 2) }
+  preview "regular"   { product: .sample(onSale: false) }
+}
+
+component RankedRow(product: Product) {
+  intent "A best-seller row; the top three ranks are highlighted"
+
+  view {
+    stack(.horizontal, spacing: .md, padding: .sm) {
+      if context.siblings.index < 3 {
+        text("\(context.siblings.index + 1)", style: .title, color: .accent)
+      } else {
+        text("\(context.siblings.index + 1)", style: .title, color: .tertiary)
+      }
+      image(product.photo, size: .thumbnail, corner: .sm)
+      stack(.vertical, spacing: .xs) {
+        text(product.name, style: .headline)
+        text("★ \(product.rating) · \(product.reviews) reviews", style: .caption, color: .secondary)
+      }
+      spacer()
+      text(product.price, style: .callout)
+    }
+    if !context.siblings.isLast {
+      divider()
+    }
+  }
+
+  preview "first" { product: .sample, context: .siblings(0, of: 5) }
+  preview "fifth" { product: .sample, context: .siblings(4, of: 5) }
+}
+
+component SectionHeader(title: String, subtitle: String) {
+  view {
+    stack(.vertical, spacing: .xs) {
+      text(title, style: .title)
+      text(subtitle, style: .caption, color: .secondary)
+    }
+  }
+
+  preview "default" { title: "Today's deals", subtitle: "Ends at midnight" }
+}
+
+component MinimalCard(product: Product) {
+  intent "The same product, styled quietly for a dense grid"
+
+  view {
+    stack(.vertical, spacing: .xs) {
+      image(product.photo, aspect: .tall)
+      text(product.brand, style: .footnote, color: .tertiary)
+      text(product.name, style: .body)
+      text(product.price, style: .footnote, color: .secondary)
+    }
+  }
+
+  preview "default"   { product: .sample }
+  preview "long name" { product: .sample(name: "Weekend Duffel in Waxed Canvas, Large") }
+}

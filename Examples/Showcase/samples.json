@@ -1,0 +1,64 @@
+{
+  "Product": [
+    {
+      "name": "Weekend Duffel",
+      "brand": "NORTHFIELD",
+      "price": "$148",
+      "photo": "duffle.bag.fill",
+      "rating": 4.8,
+      "reviews": 1204,
+      "stock": 12,
+      "onSale": true
+    },
+    {
+      "name": "Trail Runner",
+      "brand": "PACE",
+      "price": "$120",
+      "photo": "shoe.fill",
+      "rating": 4.6,
+      "reviews": 856,
+      "stock": 3,
+      "onSale": false
+    },
+    {
+      "name": "Desk Lamp",
+      "brand": "LUMEN",
+      "price": "$64",
+      "photo": "lamp.desk.fill",
+      "rating": 4.7,
+      "reviews": 432,
+      "stock": 40,
+      "onSale": true
+    },
+    {
+      "name": "Wool Beanie",
+      "brand": "NORTHFIELD",
+      "price": "$28",
+      "photo": "snowflake",
+      "rating": 4.4,
+      "reviews": 290,
+      "stock": 25,
+      "onSale": false
+    },
+    {
+      "name": "Water Bottle",
+      "brand": "TIDE",
+      "price": "$32",
+      "photo": "drop.fill",
+      "rating": 4.9,
+      "reviews": 2310,
+      "stock": 1,
+      "onSale": true
+    },
+    {
+      "name": "Camp Mug",
+      "brand": "TIDE",
+      "price": "$18",
+      "photo": "cup.and.saucer.fill",
+      "rating": 4.5,
+      "reviews": 178,
+      "stock": 60,
+      "onSale": false
+    }
+  ]
+}
