@@ -1,0 +1,16 @@
+import Models.Product
+
+component ProductCard(product: Product) {
+  intent "Show one product with its photo, name and price"
+
+  view {
+    stack(.vertical, spacing: .md) {
+      image(product.photo, aspect: .square, corner: .md)
+      text(product.name, style: .headline)
+      text(product.price, style: .body, color: .secondary)
+    }
+  }
+
+  preview "default"   { product: .sample }
+  preview "long name" { product: .sample(name: "An unusually long product name that wraps") }
+}
