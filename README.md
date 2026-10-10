@@ -21,10 +21,10 @@ component ProductCard(product: Product) {
 }
 ```
 
-> **Status: milestone 3, pre-alpha.** Laur parses and live-previews interactive
-> components with state, actions, lists, conditions and position context. Async
-> loading, gates, events, navigation and the Swift compiler are designed but not built
-> yet. The syntax will change.
+> **Status: milestone 4, pre-alpha.** Laur parses and live-previews interactive
+> components with loading data, state, actions, lists, conditions and position context.
+> Gates, events, navigation and the Swift compiler are designed but not built yet. The
+> syntax will change.
 
 ## Try it
 
@@ -53,6 +53,7 @@ Previews are interactive. Type into the fields and press the buttons in the sign
 
 ```sh
 swift run laur preview Examples/SignUp/SignUp.laur
+swift run laur preview Examples/OrderHistory/OrderHistory.laur
 ```
 
 For a fuller picture of what components can look like, open the storefront showcase:
@@ -122,11 +123,51 @@ component Stepper(value: bind Number) {
 
 - `state` can be `String`, `Number` or `Bool`, and always has a starting value.
 - `derived` values update whenever what they use changes, and can't be assigned.
-- Statements are `x = ...`, `x += ...`, `x -= ...`, `someAction()` and `if`.
+- Statements are `x = ...`, `x += ...`, `x -= ...`, `someAction()`, `someLoad.reload()` and `if`.
 - Parameters can't change unless declared `bind`; the checker explains how to fix it.
 - Previews can set starting state: `preview "ready" { email: "a@b.com", agreed: true }`.
 - Strings and lists have `count` and `isEmpty`; strings have `contains`, `hasPrefix`,
   `hasSuffix`, `lowercased()`, `uppercased()` and `trimmed()`; lists have `contains`.
+
+## Loading data
+
+Swift functions Laur can call are declared as a `service`. A `load` calls one when the
+component appears, and `when` must handle all three outcomes, so no screen ships without
+a loading and an error state.
+
+```laur
+service Orders {
+  fetch(userId: String) -> [Order]
+}
+
+component OrderHistory(userId: String) {
+  load orders = Orders.fetch(userId: userId)
+
+  view {
+    when orders {
+      loading { spinner() }
+      failed(error) {
+        if error.kind == .network { text("You're offline") } else { text(error.message) }
+        button("Try again") { orders.reload() }
+      }
+      loaded(items) {
+        list(items) { order in OrderRow(order: order) }
+      }
+    }
+  }
+
+  preview "live"    { userId: "u_1" }
+  preview "offline" { userId: "u_1", orders: .failed(.network) }
+  preview "empty"   { userId: "u_1", orders: .loaded([]) }
+}
+```
+
+In previews, loads never touch a real server. A load waits briefly and then returns the
+sample data for its result type (`Order` in `samples.json`), so you see the loading
+screen. A preview can pin an outcome with `.loading`, `.failed(.kind)`,
+`.failed(.kind, "message")` or `.loaded(value)`, and `reload()` still works from there.
+Errors have a `kind` (`.network`, `.notFound`, `.unauthorized`, `.server`, `.other`) and a
+`message`. Real calls arrive with the Swift compiler.
 
 ## Context
 
@@ -174,6 +215,7 @@ A preview can place a component anywhere with `context: .siblings(2, of: 5)` or
 | `field` | its label | `value: bind ...` (required), `secure`, `keyboard` |
 | `toggle` | its label | `value: bind ...` (required) |
 | `button` | its label; the block runs on tap: `button("Save") { save() }` | `style`, `enabled` |
+| `spinner` | | |
 | `spacer` | | |
 | `divider` | | |
 
@@ -194,6 +236,7 @@ Design tokens:
 | image size | `.thumbnail` `.small` `.medium` `.large` |
 | keyboard | `.text` `.email` `.number` `.phone` `.url` |
 | button style | `.primary` `.secondary` `.plain` `.destructive` |
+| error kind | `.network` `.notFound` `.unauthorized` `.server` `.other` |
 
 ## How it's built
 
@@ -210,6 +253,7 @@ Examples/
   ProductCard/   Example 1 from the spec: a static card.
   ProductList/   Example 2: a list where each row knows its position.
   SignUp/        Example 3: an interactive form, a password meter and a stepper.
+  OrderHistory/  Example 4: loading data, with loading, failure and empty states.
   Showcase/      A storefront built from five differently styled cards and lists.
 ```
 
@@ -224,7 +268,7 @@ Each milestone implements one example from the language spec:
 1. ✅ Static components, previews, live reload
 2. ✅ Lists, `if`, expressions and position context
 3. ✅ State, bindings and actions
-4. Async loading with `load` and `when`
+4. ✅ Async loading with `load` and `when`
 5. Gates (A/B tests) with automatic exposure logging
 6. Whole-component version swaps
 7. Screens and navigation
