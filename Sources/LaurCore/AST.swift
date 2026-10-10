@@ -29,6 +29,12 @@ public struct Component: Equatable, Sendable {
     public var params: [Param]
     /// The plain-language purpose, from `intent "..."`.
     public var intent: String?
+    /// `state email: String = ""`, in declaration order.
+    public var states: [StateDecl] = []
+    /// `derived canSubmit = ...`, in declaration order (each can use the ones before it).
+    public var derived: [DerivedDecl] = []
+    /// `action submit() { ... }`
+    public var actions: [ActionDecl] = []
     /// Top-level nodes of the `view { ... }` block, or nil when the component has none.
     public var view: [Node]?
     public var previews: [PreviewBlock]
@@ -38,9 +44,65 @@ public struct Component: Equatable, Sendable {
         params.first { $0.name == name }
     }
 
+    public func state(named name: String) -> StateDecl? {
+        states.first { $0.name == name }
+    }
+
+    public func action(named name: String) -> ActionDecl? {
+        actions.first { $0.name == name }
+    }
+
     public func preview(named name: String) -> PreviewBlock? {
         previews.first { $0.name == name }
     }
+}
+
+/// `state email: String = ""`: a value the component owns and its actions can change.
+public struct StateDecl: Equatable, Sendable {
+    public var name: String
+    public var nameRange: SourceRange
+    public var type: TypeRef
+    public var initial: Expr
+    public var range: SourceRange
+}
+
+/// `derived canSubmit = email.contains("@") && !submitting`: recomputed from other values.
+public struct DerivedDecl: Equatable, Sendable {
+    public var name: String
+    public var nameRange: SourceRange
+    public var value: Expr
+    public var range: SourceRange
+}
+
+/// `action submit() { ... }`: the only place, besides a button's block, that changes state.
+public struct ActionDecl: Equatable, Sendable {
+    public var name: String
+    public var nameRange: SourceRange
+    public var body: [Statement]
+    public var range: SourceRange
+}
+
+/// One step of an action.
+public indirect enum Statement: Equatable, Sendable {
+    /// `email = ""`, `count += 1`
+    case assign(target: String, targetRange: SourceRange, op: String, value: Expr)
+    /// `submit()`
+    case call(name: String, range: SourceRange)
+    /// `if a { ... } else if b { ... } else { ... }`
+    case conditional(branches: [StatementBranch], otherwise: [Statement]?, range: SourceRange)
+
+    public var range: SourceRange {
+        switch self {
+        case .assign(_, let targetRange, _, let value): return targetRange.union(value.range)
+        case .call(_, let range): return range
+        case .conditional(_, _, let range): return range
+        }
+    }
+}
+
+public struct StatementBranch: Equatable, Sendable {
+    public var condition: Expr
+    public var body: [Statement]
 }
 
 /// `product: Product`
@@ -57,21 +119,29 @@ public indirect enum TypeRef: Equatable, Sendable, CustomStringConvertible {
     case optional(TypeRef)
     /// `[Product]`
     case array(TypeRef)
+    /// `bind Number`: the caller passes `bind x`, and changes flow back to it.
+    case binding(TypeRef)
 
     public var description: String {
         switch self {
         case .named(let path): return path.joined(separator: ".")
         case .optional(let inner): return "\(inner)?"
         case .array(let inner): return "[\(inner)]"
+        case .binding(let inner): return "bind \(inner)"
         }
     }
 
-    /// The last name in the type, ignoring `?` and `[]`. `[Models.Product]?` → `Product`.
+    /// The last name in the type, ignoring `?`, `[]` and `bind`. `[Models.Product]?` → `Product`.
     public var baseName: String {
         switch self {
         case .named(let path): return path.last ?? ""
-        case .optional(let inner), .array(let inner): return inner.baseName
+        case .optional(let inner), .array(let inner), .binding(let inner): return inner.baseName
         }
+    }
+
+    public var isBinding: Bool {
+        if case .binding = self { return true }
+        return false
     }
 
     public var isOptional: Bool {
@@ -109,6 +179,8 @@ public struct Element: Equatable, Sendable {
     public var binding: Binding?
     /// The `{ ... }` block after the call, or nil when there isn't one.
     public var children: [Node]?
+    /// For `button`, the block is an action to run, not more elements.
+    public var handler: [Statement]? = nil
     public var range: SourceRange
 
     /// Arguments without a label, in order.
@@ -163,6 +235,10 @@ public struct Expr: Equatable, Sendable {
         case binary(String, Expr, Expr)
         /// `"#\(index + 1) of \(count)"`
         case interpolation([InterpolationPart])
+        /// `bind email`: a reference to state, for fields and `bind` parameters.
+        case bind(String)
+        /// `email.contains("@")`: a built-in method on a value.
+        case method(receiver: Expr, name: String, arguments: [Argument])
     }
 
     public enum InterpolationPart: Equatable, Sendable {
@@ -196,6 +272,9 @@ public struct Expr: Equatable, Sendable {
                 return []
             }
         case .token(_, let arguments): return (arguments ?? []).flatMap { $0.value.paths }
+        case .bind(let name): return [([name], range)]
+        case .method(let receiver, _, let arguments):
+            return receiver.paths + arguments.flatMap { $0.value.paths }
         case .string, .number, .bool: return []
         }
     }
