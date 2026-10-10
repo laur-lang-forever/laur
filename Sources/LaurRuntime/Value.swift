@@ -115,6 +115,10 @@ public struct SampleData {
         case .bool(let b): return .bool(b)
         case .path, .bind, .method:
             throw RuntimeError("previews take fixed values, not properties", at: expr.range)
+        case .list(let items):
+            var element = type
+            if case .array(let inner) = type { element = inner }
+            return .list(try items.map { try resolve($0, type: element) })
         case .unary, .binary, .interpolation:
             // Fixed values written with operators, like `-1` or `"a" + "b"`.
             return try Evaluator.evaluate(expr, in: [:])

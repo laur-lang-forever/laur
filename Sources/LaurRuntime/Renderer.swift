@@ -119,6 +119,7 @@ public struct Renderer {
         case "field": return try field(element, scope: scope)
         case "toggle": return try toggle(element, scope: scope)
         case "button": return try button(element, scope: scope)
+        case "spinner": return AnyView(ProgressView().frame(maxWidth: .infinity))
         case "spacer": return AnyView(Spacer(minLength: 0))
         case "divider": return AnyView(Divider())
         default:

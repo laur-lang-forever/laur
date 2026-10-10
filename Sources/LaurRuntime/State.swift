@@ -9,6 +9,18 @@ import LaurCore
 /// the file keeps what you typed; `reset()` starts over.
 public final class StateStore: ObservableObject {
     private var values: [String: Value] = [:]
+    private var loads: [String: LoadState] = [:]
+    /// What each load returns in a preview, once its simulated delay is over.
+    private var simulations: [String: LoadState] = [:]
+    /// Loads waiting to finish, with a generation number so a stale timer can't finish
+    /// a load that was reset or restarted since.
+    private var pending: [String: Int] = [:]
+    private var generation = 0
+
+    /// How long a simulated load takes in a preview, so the loading screen is visible.
+    public var simulatedDelay: TimeInterval = 0.8
+    /// Tests turn this off and call `completePendingLoads()` themselves.
+    public var completesLoadsAutomatically = true
 
     /// Bumped on every change a person makes, so views know to re-render.
     @Published public private(set) var version = 0
@@ -36,12 +48,87 @@ public final class StateStore: ObservableObject {
 
     public func reset() {
         values = [:]
+        loads = [:]
+        simulations = [:]
+        pending = [:]
         lastError = nil
+        version += 1
+    }
+
+    // MARK: - Loads
+
+    public func loadState(_ key: String) -> LoadState? {
+        loads[key]
+    }
+
+    /// Starts a load that will finish with `result` after the simulated delay.
+    func startLoad(_ key: String, simulating result: LoadState) {
+        guard loads[key] == nil else { return }
+        loads[key] = .loading
+        simulations[key] = result
+        schedule(key)
+    }
+
+    /// Fixes a load at `state`, as a preview asks. `reload()` still simulates `result`.
+    func pinLoad(_ key: String, at state: LoadState, simulating result: LoadState) {
+        guard loads[key] == nil else { return }
+        loads[key] = state
+        simulations[key] = result
+    }
+
+    /// `orders.reload()`: back to loading, then the simulated result.
+    public func reload(_ key: String) {
+        loads[key] = .loading
+        version += 1
+        schedule(key)
+    }
+
+    /// Finishes every load that's waiting, immediately.
+    public func completePendingLoads() {
+        for (key, ticket) in pending {
+            complete(key, ticket: ticket)
+        }
+    }
+
+    public var hasPendingLoads: Bool { !pending.isEmpty }
+
+    private func schedule(_ key: String) {
+        generation += 1
+        let ticket = generation
+        pending[key] = ticket
+        guard completesLoadsAutomatically else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + simulatedDelay) { [weak self] in
+            self?.complete(key, ticket: ticket)
+        }
+    }
+
+    private func complete(_ key: String, ticket: Int) {
+        guard pending[key] == ticket else { return }
+        pending[key] = nil
+        loads[key] = simulations[key] ?? .failed(kind: "other", message: "Nothing to load.")
         version += 1
     }
 
     /// Every key and value, for tests and debugging.
     public var snapshot: [String: Value] { values }
+}
+
+/// Where a `load` is: what `when` switches on.
+public enum LoadState: Equatable {
+    case loading
+    case failed(kind: String, message: String)
+    case loaded(Value)
+
+    /// The message a preview shows for `.failed(.network)` when it doesn't give one.
+    static func defaultMessage(for kind: String) -> String {
+        switch kind {
+        case "network": return "The Internet connection appears to be offline."
+        case "notFound": return "We couldn't find that."
+        case "unauthorized": return "Please sign in again."
+        case "server": return "Something went wrong on our end."
+        default: return "Something went wrong."
+        }
+    }
 }
 
 /// What code inside one component instance can see and change.
@@ -51,6 +138,8 @@ public struct InstanceScope {
     /// Names that can be assigned or bound (state and `bind` parameters), mapped to
     /// their key in the `StateStore`.
     public var stateKeys: [String: String]
+    /// Each `load`'s key in the `StateStore`.
+    public var loads: [String: String] = [:]
     /// The component whose actions `name()` refers to.
     public var component: Component?
 
@@ -110,6 +199,12 @@ public enum ActionRunner {
                     throw RuntimeError("there's no action `\(name)`", at: range)
                 }
                 try execute(action.body, env: &env, store: store, depth: depth + 1)
+
+            case .reload(let name, let range):
+                guard let key = env.loads[name] else {
+                    throw RuntimeError("`\(name)` isn't a load", at: range)
+                }
+                store.reload(key)
 
             case .conditional(let branches, let otherwise, _):
                 var chosen = otherwise

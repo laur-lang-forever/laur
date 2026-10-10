@@ -43,6 +43,7 @@ public final class Resolver {
 
         var params: Scope = [:]
         var startingState: Scope = [:]
+        var startingLoads: [String: LoadState] = [:]
         var siblings = (index: 0, count: 1)
         var readingCountOverride = 0
         do {
@@ -59,6 +60,12 @@ public final class Resolver {
                     startingState[state.name] = try samples.resolve(entry.value, type: state.type)
                 }
             }
+            // ...or pin a load at loading, failed or loaded.
+            for load in component.loads {
+                if let entry = preview.entry(load.name) {
+                    startingLoads[load.name] = try pinnedState(entry.value, for: load)
+                }
+            }
             if let entry = preview.entry("context") {
                 let (kind, index, count) = try Self.previewPosition(entry.value)
                 if kind == "siblings" {
@@ -73,7 +80,7 @@ public final class Resolver {
         }
 
         let root = resolveComponent(component, params: params, bound: [:], startingState: startingState,
-                                    siblings: siblings, parent: nil, depth: 0)
+                                    startingLoads: startingLoads, siblings: siblings, parent: nil, depth: 0)
 
         for context in contexts {
             context.readingCount = max(readingCounter, readingCountOverride)
@@ -89,6 +96,7 @@ public final class Resolver {
         params: Scope,
         bound: [String: String],
         startingState: Scope,
+        startingLoads: [String: LoadState] = [:],
         siblings: (index: Int, count: Int),
         parent: ContextInfo?,
         depth: Int
@@ -134,6 +142,20 @@ public final class Resolver {
                 scope.values[declaration.name] = state.value(key) ?? .null
             }
             try scope.recomputeDerived()
+            // Loads start the first time the component appears and keep their result
+            // until reset or reloaded.
+            for load in component.loads {
+                let key = "\(path)#\(load.name)"
+                if state.loadState(key) == nil {
+                    let result = simulatedResult(of: load)
+                    if let pinned = startingLoads[load.name] {
+                        state.pinLoad(key, at: pinned, simulating: result)
+                    } else {
+                        state.startLoad(key, simulating: result)
+                    }
+                }
+                scope.loads[load.name] = key
+            }
         } catch {
             return .component(component, context: context, children: [.failure(error as? RuntimeError ?? RuntimeError("\(error)"))])
         }
@@ -144,9 +166,10 @@ public final class Resolver {
 
     // MARK: - Nodes
 
-    /// One entry of a container after its `if`s are decided.
+    /// One entry of a container after its `if`s and `when`s are decided, with the scope
+    /// it's read in (a `when` branch adds its value).
     private enum Placed {
-        case element(Element)
+        case element(Element, InstanceScope)
         case failure(RuntimeError)
     }
 
@@ -165,20 +188,42 @@ public final class Resolver {
             switch item {
             case .failure(let error):
                 return .failure(error)
-            case .element(let element):
+            case .element(let element, let elementScope):
                 let siblings = position ?? (i, placed.count)
-                return resolveElement(element, scope: scope, siblings: siblings, owner: owner, depth: depth)
+                return resolveElement(element, scope: elementScope, siblings: siblings, owner: owner, depth: depth)
             }
         }
     }
 
-    /// Flattens `if`s into the elements they choose.
+    /// Flattens `if`s and `when`s into the elements they choose.
     private func place(_ nodes: [Node], scope: InstanceScope) -> [Placed] {
         var placed: [Placed] = []
         for node in nodes {
             switch node {
             case .element(let element):
-                placed.append(.element(element))
+                placed.append(.element(element, scope))
+            case .when(let when):
+                guard let key = scope.loads[when.subject] else {
+                    placed.append(.failure(RuntimeError("`\(when.subject)` isn't a load", at: when.subjectRange)))
+                    continue
+                }
+                var branchScope = scope
+                let branch: When.Branch?
+                switch state.loadState(key) ?? .loading {
+                case .loading:
+                    branch = when.branch("loading")
+                case .failed(let kind, let message):
+                    branch = when.branch("failed")
+                    if let name = branch?.binding?.name {
+                        branchScope.values[name] = .record(["kind": .token(kind), "message": .string(message)])
+                    }
+                case .loaded(let value):
+                    branch = when.branch("loaded")
+                    if let name = branch?.binding?.name {
+                        branchScope.values[name] = value
+                    }
+                }
+                placed += place(branch?.body ?? [], scope: branchScope)
             case .conditional(let conditional):
                 do {
                     var chosen: [Node]? = conditional.otherwise
@@ -260,6 +305,56 @@ public final class Resolver {
             children += resolveNodes(element.children ?? [], scope: itemScope, owner: owner, depth: depth, position: (i, items.count))
         }
         return .element(element, scope: scope, children: children)
+    }
+
+    // MARK: - Loads
+
+    /// What a load returns in a preview: the sample data for the service function's
+    /// result type, or a failure explaining what sample data to add.
+    private func simulatedResult(of load: LoadDecl) -> LoadState {
+        guard let returns = returnType(of: load) else {
+            return .failed(kind: "other", message: "`\(load.name)` doesn't call a declared service.")
+        }
+        let typeName = returns.baseName
+        guard let items = samples.types[typeName] else {
+            return .failed(kind: "other", message: "No sample data for `\(typeName)`. Add a \"\(typeName)\" entry to samples.json.")
+        }
+        if case .array = returns {
+            return .loaded(.list(items))
+        }
+        return LoadState.loaded(items.first ?? .null)
+    }
+
+    private func returnType(of load: LoadDecl) -> TypeRef? {
+        guard case .method(let receiver, let functionName, _) = load.call.kind,
+              case .path(let path) = receiver.kind, path.count == 1 else { return nil }
+        return file.service(named: path[0])?.function(named: functionName)?.returns
+    }
+
+    /// Reads `.loading`, `.failed(.network, "message")` or `.loaded(value)` from a preview.
+    private func pinnedState(_ expr: Expr, for load: LoadDecl) throws -> LoadState {
+        guard case .token(let name, let arguments) = expr.kind else {
+            throw RuntimeError("`\(load.name)` takes `.loading`, `.failed(...)` or `.loaded(...)`", at: expr.range)
+        }
+        let args = arguments ?? []
+        switch name {
+        case "loading":
+            return .loading
+        case "failed":
+            let kind = args.first?.value.tokenName ?? "other"
+            var message = LoadState.defaultMessage(for: kind)
+            if args.count > 1, case .string(let text) = args[1].value.kind {
+                message = text
+            }
+            return .failed(kind: kind, message: message)
+        case "loaded":
+            guard let first = args.first else {
+                throw RuntimeError("`.loaded` needs a value, like `.loaded(.samples(3))`", at: expr.range)
+            }
+            return .loaded(try samples.resolve(first.value, type: returnType(of: load) ?? .named(["_"])))
+        default:
+            throw RuntimeError("`.\(name)` isn't a load state", at: expr.range)
+        }
     }
 
     // MARK: - Previews

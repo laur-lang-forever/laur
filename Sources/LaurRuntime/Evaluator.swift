@@ -19,6 +19,9 @@ public enum Evaluator {
         case .bind(let name):
             return try lookup([name], in: scope, at: expr.range)
 
+        case .list(let items):
+            return .list(try items.map { try evaluate($0, in: scope) })
+
         case .method(let receiverExpr, let name, let arguments):
             let receiver = try evaluate(receiverExpr, in: scope)
             let values = try arguments.map { try evaluate($0.value, in: scope) }
