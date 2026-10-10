@@ -9,6 +9,8 @@ public enum TokenCategory: String, CaseIterable, Sendable {
     case corner
     case aspect
     case imageSize = "image size"
+    case keyboard
+    case buttonStyle = "button style"
 
     public var names: [String] {
         switch self {
@@ -20,6 +22,8 @@ public enum TokenCategory: String, CaseIterable, Sendable {
         case .corner: return ["none", "sm", "md", "lg", "full"]
         case .aspect: return ["square", "wide", "tall", "fit"]
         case .imageSize: return ["thumbnail", "small", "medium", "large"]
+        case .keyboard: return ["text", "email", "number", "phone", "url"]
+        case .buttonStyle: return ["primary", "secondary", "plain", "destructive"]
         }
     }
 }
@@ -32,6 +36,8 @@ public enum ArgumentKind: Equatable, Sendable {
     case token(TokenCategory)
     /// A token, or a raw number that the checker flags with a warning.
     case tokenOrNumber(TokenCategory)
+    /// `bind someState`: a two-way reference the element reads and writes.
+    case binding
 }
 
 /// The built-in elements a `view` can use.
@@ -44,6 +50,8 @@ public struct Primitive {
     public var labeled: [(label: String, kind: ArgumentKind)]
     public var allowsChildren: Bool
     public var summary: String
+    /// Labeled arguments that must be passed, like `value:` on a `field`.
+    public var requiredLabels: [String] = []
 
     public func kind(forLabel label: String) -> ArgumentKind? {
         labeled.first { $0.label == label }?.kind
@@ -109,6 +117,41 @@ public struct Primitive {
             summary: "shows a short label in a pill"
         ),
         Primitive(
+            name: "field",
+            positional: [.value],
+            requiredPositional: 1,
+            labeled: [
+                ("value", .binding),
+                ("secure", .value),
+                ("keyboard", .token(.keyboard)),
+            ],
+            allowsChildren: false,
+            summary: "lets the user type text into a `state` value",
+            requiredLabels: ["value"]
+        ),
+        Primitive(
+            name: "toggle",
+            positional: [.value],
+            requiredPositional: 1,
+            labeled: [
+                ("value", .binding),
+            ],
+            allowsChildren: false,
+            summary: "switches a `Bool` state value on and off",
+            requiredLabels: ["value"]
+        ),
+        Primitive(
+            name: "button",
+            positional: [.value],
+            requiredPositional: 1,
+            labeled: [
+                ("style", .token(.buttonStyle)),
+                ("enabled", .value),
+            ],
+            allowsChildren: false,
+            summary: "runs its block when tapped"
+        ),
+        Primitive(
             name: "spacer",
             positional: [],
             requiredPositional: 0,
@@ -166,4 +209,25 @@ public enum ContextSchema {
     public static func group(named name: String) -> Group? {
         groups.first { $0.name == name }
     }
+}
+
+/// Types a `state` value can have so far.
+public enum StateTypes {
+    public static let all: [String] = ["String", "Number", "Bool"]
+}
+
+/// Built-in properties and methods on values, like `email.count` or `email.contains("@")`.
+public enum BuiltIns {
+    /// Properties available on strings and lists.
+    public static let properties: [String] = ["count", "isEmpty"]
+
+    /// Method name → number of arguments.
+    public static let methods: [String: Int] = [
+        "contains": 1,
+        "hasPrefix": 1,
+        "hasSuffix": 1,
+        "lowercased": 0,
+        "uppercased": 0,
+        "trimmed": 0,
+    ]
 }

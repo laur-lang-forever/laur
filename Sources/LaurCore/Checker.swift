@@ -30,13 +30,14 @@ public struct Checker {
     // MARK: - Components
 
     private mutating func checkComponent(_ component: Component) {
+        // `context` is always in scope: every component knows where it sits.
+        let scope = checkMembers(component, base: Set(component.params.map(\.name) + ["context"]))
+
         if let view = component.view {
             if view.isEmpty {
                 report("the `view` of `\(component.name)` is empty", at: component.nameRange,
                        help: ["add an element, like `text(\"Hello\")`"])
             }
-            // `context` is always in scope: every component knows where it sits.
-            let scope = Set(component.params.map(\.name) + ["context"])
             checkNodes(view, in: component, scope: scope)
         } else {
             report("`\(component.name)` has no `view`", at: component.nameRange,
@@ -58,6 +59,125 @@ public struct Checker {
         }
     }
 
+    /// Checks `state`, `derived` and `action` declarations, and returns every name the
+    /// view can use.
+    private mutating func checkMembers(_ component: Component, base: Set<String>) -> Set<String> {
+        var scope = base
+        var declared: Set<String> = Set(component.params.map(\.name))
+
+        for state in component.states {
+            if !declared.insert(state.name).inserted {
+                report("`\(state.name)` is already declared in `\(component.name)`", at: state.nameRange)
+            }
+            if case .named(let path) = state.type, path.count == 1, StateTypes.all.contains(path[0]) {
+                if let mismatch = literalMismatch(state.initial, expected: path[0]) {
+                    report("`\(state.name)` is a \(path[0]), but starts as \(mismatch)", at: state.initial.range)
+                }
+            } else {
+                report(
+                    "state can be \(StateTypes.all.map { "`\($0)`" }.joined(separator: ", ")) for now",
+                    at: state.nameRange,
+                    help: ["`\(state.type)` state comes in a later milestone"]
+                )
+            }
+            checkExpr(state.initial, argument: "the starting value of `\(state.name)`", scope: scope, component: component)
+            scope.insert(state.name)
+        }
+
+        for derived in component.derived {
+            if !declared.insert(derived.name).inserted {
+                report("`\(derived.name)` is already declared in `\(component.name)`", at: derived.nameRange)
+            }
+            checkExpr(derived.value, argument: "`\(derived.name)`", scope: scope, component: component)
+            scope.insert(derived.name)
+        }
+
+        var actionNames: Set<String> = []
+        for action in component.actions {
+            if !actionNames.insert(action.name).inserted {
+                report("there's already an action named `\(action.name)`", at: action.nameRange)
+            }
+            checkStatements(action.body, in: component, scope: scope)
+        }
+        return scope
+    }
+
+    /// Describes a literal whose type plainly doesn't match, like a string for a `Number`.
+    private func literalMismatch(_ expr: Expr, expected: String) -> String? {
+        switch (expr.kind, expected) {
+        case (.string, "String"), (.interpolation, "String"), (.number, "Number"), (.bool, "Bool"): return nil
+        case (.unary("-", _), "Number"), (.unary("!", _), "Bool"): return nil
+        case (.string, _), (.interpolation, _): return "a string"
+        case (.number, _): return "a number"
+        case (.bool, _): return "`true` or `false`"
+        default: return nil
+        }
+    }
+
+    // MARK: - Actions
+
+    private mutating func checkStatements(_ statements: [Statement], in component: Component, scope: Set<String>) {
+        for statement in statements {
+            switch statement {
+            case .assign(let target, let targetRange, let op, let value):
+                checkAssignable(target, at: targetRange, in: component, scope: scope)
+                checkExpr(value, argument: "the new value of `\(target)`", scope: scope, component: component)
+                if op != "=", case .string = value.kind {
+                    report("`\(op)` works on numbers", at: value.range,
+                           help: ["to change text, assign the whole value: `\(target) = ...`"])
+                }
+            case .call(let name, let range):
+                if component.action(named: name) == nil {
+                    var help = suggestion(for: name, in: component.actions.map(\.name))
+                    if component.actions.isEmpty {
+                        help.append("declare it with `action \(name)() { ... }`")
+                    }
+                    report("`\(component.name)` has no action `\(name)`", at: range, help: help)
+                }
+            case .conditional(let branches, let otherwise, _):
+                for branch in branches {
+                    checkExpr(branch.condition, argument: "an `if` condition", scope: scope, component: component)
+                    checkStatements(branch.body, in: component, scope: scope)
+                }
+                if let otherwise {
+                    checkStatements(otherwise, in: component, scope: scope)
+                }
+            }
+        }
+    }
+
+    /// Only `state` and `bind` parameters can change.
+    private mutating func checkAssignable(_ name: String, at range: SourceRange, in component: Component, scope: Set<String>) {
+        if component.state(named: name) != nil { return }
+        if let param = component.param(named: name) {
+            if param.type.isBinding { return }
+            report("`\(name)` is a parameter, so it can't be changed here", at: range,
+                   help: ["make it `state`, or declare the parameter as `\(name): bind \(param.type)` so the caller's state changes"])
+        } else if component.derived.contains(where: { $0.name == name }) {
+            report("`\(name)` is derived from other values, so it can't be assigned", at: range,
+                   help: ["change the values it's derived from instead"])
+        } else if name == "context" {
+            report("`context` is read-only", at: range)
+        } else {
+            let candidates = component.states.map(\.name) + component.params.filter { $0.type.isBinding }.map(\.name)
+            report("`\(name)` isn't a state value in `\(component.name)`", at: range,
+                   help: suggestion(for: name, in: candidates) + ["declare it with `state \(name): Number = 0`"])
+        }
+    }
+
+    /// `bind x` needs `x` to be state or a `bind` parameter.
+    private mutating func checkBindTarget(_ name: String, at range: SourceRange, in component: Component, scope: Set<String>) {
+        if component.state(named: name) != nil { return }
+        if let param = component.param(named: name), param.type.isBinding { return }
+        if scope.contains(name) {
+            report("`\(name)` can't be bound", at: range,
+                   help: ["only `state` values and `bind` parameters can be bound"])
+        } else {
+            report("`\(name)` isn't defined in `\(component.name)`", at: range,
+                   help: suggestion(for: name, in: component.states.map(\.name)))
+        }
+    }
+
     private mutating func checkPreview(_ preview: PreviewBlock, of component: Component) {
         let paramNames = component.params.map(\.name)
         for entry in preview.entries {
@@ -65,11 +185,11 @@ public struct Checker {
                 checkPreviewContext(entry)
                 continue
             }
-            guard component.param(named: entry.name) != nil else {
+            guard component.param(named: entry.name) != nil || component.state(named: entry.name) != nil else {
                 report(
-                    "`\(entry.name)` isn't a parameter of `\(component.name)`",
+                    "`\(entry.name)` isn't a parameter or state of `\(component.name)`",
                     at: entry.nameRange,
-                    help: suggestion(for: entry.name, in: paramNames + ["context"])
+                    help: suggestion(for: entry.name, in: paramNames + component.states.map(\.name) + ["context"])
                 )
                 continue
             }
@@ -219,6 +339,19 @@ public struct Checker {
             checkValue(argument.value, accepts: kind, argument: "`\(label)`", scope: scope, component: component)
         }
 
+        for label in primitive.requiredLabels where node.argument(label) == nil {
+            report("`\(primitive.name)` needs a `\(label):` argument", at: node.nameRange,
+                   help: ["for example `\(primitive.name)(\"Email\", \(label): bind email)`"])
+        }
+        if primitive.name == "button" {
+            if let handler = node.handler {
+                checkStatements(handler, in: component, scope: scope)
+            } else {
+                report("`button` needs a block that says what happens on tap", at: node.nameRange,
+                       help: ["for example `button(\"Save\") { save() }`"])
+            }
+        }
+
         if node.children != nil && !primitive.allowsChildren {
             report(
                 "`\(primitive.name)` can't contain other elements",
@@ -250,7 +383,15 @@ public struct Checker {
                 continue
             }
             passed.insert(label)
-            checkValue(argument.value, accepts: .value, argument: "`\(label)`", scope: scope, component: component)
+            let isBindParam = target.param(named: label)?.type.isBinding ?? false
+            if isBindParam {
+                checkValue(argument.value, accepts: .binding, argument: "`\(label)`", scope: scope, component: component)
+            } else if case .bind = argument.value.kind {
+                report("`\(label)` isn't a `bind` parameter of `\(target.name)`", at: argument.value.range,
+                       help: ["pass the value itself, or declare it as `\(label): bind ...` in `\(target.name)`"])
+            } else {
+                checkValue(argument.value, accepts: .value, argument: "`\(label)`", scope: scope, component: component)
+            }
         }
         for param in target.params where !param.type.isOptional && !passed.contains(param.name) {
             report("`\(target.name)` needs a value for `\(param.name)`", at: node.nameRange)
@@ -267,6 +408,13 @@ public struct Checker {
         switch (expr.kind, kind) {
         case (_, .value):
             checkExpr(expr, argument: argument, scope: scope, component: component)
+
+        case (.bind(let name), .binding):
+            checkBindTarget(name, at: expr.range, in: component, scope: scope)
+
+        case (_, .binding):
+            report("\(argument) takes `bind` and a state name", at: expr.range,
+                   help: ["for example `value: bind email`, where `email` is a `state` value"])
 
         case (.token(let name, let arguments), .token(let category)),
              (.token(let name, let arguments), .tokenOrNumber(let category)):
@@ -312,6 +460,26 @@ public struct Checker {
         case .interpolation(let parts):
             for case .expr(let inner) in parts {
                 checkExpr(inner, argument: argument, scope: scope, component: component)
+            }
+        case .bind:
+            report("`bind` passes state to a field, a toggle or a `bind` parameter", at: expr.range,
+                   help: ["to read the value here, drop `bind`"])
+        case .method(let receiver, let name, let arguments):
+            checkExpr(receiver, argument: argument, scope: scope, component: component)
+            if let arity = BuiltIns.methods[name] {
+                if arguments.count != arity {
+                    report("`\(name)` takes \(arity == 0 ? "no arguments" : "\(arity) argument\(arity == 1 ? "" : "s")")", at: expr.range)
+                }
+            } else {
+                var help = suggestion(for: name, in: Array(BuiltIns.methods.keys))
+                help.append("built-in methods are \(BuiltIns.methods.keys.sorted().map { "`\($0)`" }.joined(separator: ", "))")
+                report("there's no built-in method `\(name)`", at: expr.range, help: help)
+            }
+            for argument in arguments where argument.label != nil {
+                report("built-in methods take unlabeled arguments", at: argument.range)
+            }
+            for argument in arguments {
+                checkExpr(argument.value, argument: "an argument to `\(name)`", scope: scope, component: component)
             }
         }
     }
