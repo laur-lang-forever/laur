@@ -6,11 +6,15 @@
 ///     import      := "import" name ("." name)*
 ///     component   := "component" Name ("(" params? ")")? "{" member* "}"
 ///     param       := name ":" type
-///     type        := "[" type "]" "?"?  |  name ("." name)* "?"?
+///     type        := "bind" type  |  "[" type "]" "?"?  |  name ("." name)* "?"?
 ///     member      := "intent" string  |  "view" block  |  "preview" string "{" entry* "}"
+///                  | "state" name ":" type "=" expr  |  "derived" name "=" expr
+///                  | "action" name "()" "{" statement* "}"
+///     statement   := name ("=" | "+=" | "-=") expr  |  name "()"
+///                  | "if" expr "{" statement* "}" ("else" ...)?
 ///     block       := "{" (name "in")? node* "}"
 ///     node        := element | conditional
-///     element     := name "(" args? ")" block?
+///     element     := name "(" args? ")" block?        (a `button`'s block holds statements)
 ///     conditional := "if" expr block ("else" "if" expr block)* ("else" block)?
 ///     args        := arg ("," arg)* ","?
 ///     arg         := (name ":")? expr
@@ -18,7 +22,7 @@
 ///     unary       := ("!" | "-") unary | primary
 ///     primary     := string | number | "true" | "false" | "(" expr ")"
 ///                  | "." name ("(" args? ")")?
-///                  | name ("." name)*
+///                  | "bind" name  |  name ("." name)*  |  name ("." name)+ "(" args? ")"
 ///     entry       := name ":" expr ","?
 ///
 /// Strings can contain `\( expr )`. Parsing stops at the first error, which is reported
@@ -40,9 +44,10 @@ public struct Parser {
     // Keywords from the spec that are designed but not built yet. Using one gives a
     // clear "not supported yet" error instead of a confusing syntax error.
     private static let laterTopLevel: Set<String> = ["screen", "gate", "event", "native"]
-    private static let laterMembers: Set<String> = ["state", "derived", "load", "action", "on", "slot", "title"]
+    private static let laterMembers: Set<String> = ["load", "on", "slot", "title"]
+    private static let laterStatements: Set<String> = ["try", "await", "defer", "navigate", "present", "dismiss", "back", "log", "toast"]
     private static let laterNodes: Set<String> = ["when", "switch"]
-    private static let memberKeywords: Set<String> = ["view", "preview", "intent"]
+    private static let memberKeywords: Set<String> = ["view", "preview", "intent", "state", "derived", "action"]
 
     // MARK: - File
 
@@ -111,6 +116,9 @@ public struct Parser {
         var intent: String?
         var view: [Node]?
         var previews: [PreviewBlock] = []
+        var states: [StateDecl] = []
+        var derived: [DerivedDecl] = []
+        var actions: [ActionDecl] = []
 
         while !check(.rightBrace) {
             if check(.endOfFile) {
@@ -122,7 +130,7 @@ public struct Parser {
             let token = current
             guard case .identifier(let word) = token.kind else {
                 throw error(
-                    "expected `view`, `preview` or `intent` inside `\(name)`, found \(token.kind.display)",
+                    "expected a member like `view` or `state` inside `\(name)`, found \(token.kind.display)",
                     at: token.range
                 )
             }
@@ -145,6 +153,12 @@ public struct Parser {
                                 help: ["a component has exactly one `view` block"])
                 }
                 view = try parseBlock(owner: "view")
+            case "state":
+                states.append(try parseState())
+            case "derived":
+                derived.append(try parseDerived())
+            case "action":
+                actions.append(try parseAction())
             case "preview":
                 let preview = try parsePreview()
                 if previews.contains(where: { $0.name == preview.name }) {
@@ -158,7 +172,7 @@ public struct Parser {
                 throw error(
                     "unknown member `\(word)` in `\(name)`",
                     at: token.range,
-                    help: ["a component contains `view`, `preview` and `intent` blocks"]
+                    help: ["a component contains `state`, `derived`, `action`, `view`, `preview` and `intent`"]
                 )
             }
         }
@@ -169,6 +183,9 @@ public struct Parser {
             nameRange: nameRange,
             params: params,
             intent: intent,
+            states: states,
+            derived: derived,
+            actions: actions,
             view: view,
             previews: previews,
             range: keyword.range.union(close.range)
@@ -183,6 +200,10 @@ public struct Parser {
     }
 
     private mutating func parseType() throws -> TypeRef {
+        if case .identifier("bind") = current.kind, case .identifier = peekKind(1) {
+            advance()
+            return .binding(try parseType())
+        }
         var type: TypeRef
         if match(.leftBracket) {
             type = .array(try parseType())
@@ -198,6 +219,120 @@ public struct Parser {
             type = .optional(type)
         }
         return type
+    }
+
+    // MARK: - State, derived values and actions
+
+    /// `state email: String = ""`
+    private mutating func parseState() throws -> StateDecl {
+        let keyword = advance() // `state`
+        let (name, nameRange) = try expectIdentifier("a name after `state`")
+        try expect(.colon, "`:` and a type after `\(name)`, like `state \(name): String = \"\"`")
+        let type = try parseType()
+        guard case .symbol("=") = current.kind else {
+            throw error("expected `=` and a starting value for `\(name)`", at: current.range,
+                        help: ["state always starts with a value, like `state \(name): \(type) = ...`"])
+        }
+        advance()
+        let initial = try parseExpr()
+        return StateDecl(name: name, nameRange: nameRange, type: type, initial: initial, range: keyword.range.union(initial.range))
+    }
+
+    /// `derived canSubmit = ...`
+    private mutating func parseDerived() throws -> DerivedDecl {
+        let keyword = advance() // `derived`
+        let (name, nameRange) = try expectIdentifier("a name after `derived`")
+        guard case .symbol("=") = current.kind else {
+            throw error("expected `=` after `\(name)`", at: current.range,
+                        help: ["for example `derived \(name) = items.count > 0`"])
+        }
+        advance()
+        let value = try parseExpr()
+        return DerivedDecl(name: name, nameRange: nameRange, value: value, range: keyword.range.union(value.range))
+    }
+
+    /// `action submit() { ... }`
+    private mutating func parseAction() throws -> ActionDecl {
+        let keyword = advance() // `action`
+        let (name, nameRange) = try expectIdentifier("a name after `action`")
+        try expect(.leftParen, "`()` after `\(name)`")
+        guard check(.rightParen) else {
+            throw error("actions don't take parameters yet", at: current.range)
+        }
+        advance()
+        if case .identifier("async") = current.kind {
+            throw notYet("async", at: current.range)
+        }
+        let body = try parseStatementBlock(owner: "action \(name)")
+        return ActionDecl(name: name, nameRange: nameRange, body: body, range: keyword.range.union(previous.range))
+    }
+
+    /// `{ statement* }`
+    private mutating func parseStatementBlock(owner: String) throws -> [Statement] {
+        let open = try expect(.leftBrace, "`{` to start the `\(owner)` block")
+        var statements: [Statement] = []
+        while !check(.rightBrace) {
+            if check(.endOfFile) {
+                throw unclosed("`\(owner)`", openedAt: open.range)
+            }
+            if case .identifier(let word) = current.kind, Self.memberKeywords.contains(word) {
+                throw unclosed("`\(owner)`", openedAt: open.range, before: word)
+            }
+            statements.append(try parseStatement())
+        }
+        advance()
+        return statements
+    }
+
+    private mutating func parseStatement() throws -> Statement {
+        let token = current
+        guard case .identifier(let name) = token.kind else {
+            throw error("expected a statement like `count += 1` or `submit()`, found \(token.kind.display)", at: token.range)
+        }
+        if name == "if" {
+            advance()
+            var branches: [StatementBranch] = []
+            var otherwise: [Statement]?
+            while true {
+                let condition = try parseExpr()
+                branches.append(StatementBranch(condition: condition, body: try parseStatementBlock(owner: "if")))
+                guard case .identifier("else") = current.kind else { break }
+                advance()
+                if case .identifier("if") = current.kind {
+                    advance()
+                    continue
+                }
+                otherwise = try parseStatementBlock(owner: "else")
+                break
+            }
+            return .conditional(branches: branches, otherwise: otherwise, range: token.range.union(previous.range))
+        }
+        if Self.laterStatements.contains(name) {
+            throw notYet(name, at: token.range)
+        }
+        advance()
+        if check(.leftParen) {
+            advance()
+            guard check(.rightParen) else {
+                throw error("actions don't take arguments yet", at: current.range)
+            }
+            let close = advance()
+            return .call(name: name, range: token.range.union(close.range))
+        }
+        if case .symbol(let op) = current.kind, op == "=" || op == "+=" || op == "-=" {
+            advance()
+            let value = try parseExpr()
+            return .assign(target: name, targetRange: token.range, op: op, value: value)
+        }
+        if check(.dot) {
+            throw error("only whole state values can be assigned", at: current.range,
+                        help: ["assign `\(name)` itself; changing one field of a value comes later"])
+        }
+        throw error(
+            "expected `=`, `+=`, `-=` or `()` after `\(name)`, found \(current.kind.display)",
+            at: current.range,
+            help: ["a statement changes state (`\(name) = ...`) or runs an action (`\(name)()`)"]
+        )
     }
 
     // MARK: - Preview
@@ -289,6 +424,22 @@ public struct Parser {
             )
         }
         let arguments = try parseArguments(owner: name)
+        if name == "button" {
+            // A button's block is what happens on tap: statements, not elements.
+            var handler: [Statement]?
+            if check(.leftBrace) {
+                handler = try parseStatementBlock(owner: "button")
+            }
+            return .element(Element(
+                name: name,
+                nameRange: token.range,
+                arguments: arguments,
+                binding: nil,
+                children: nil,
+                handler: handler,
+                range: token.range.union(previous.range)
+            ))
+        }
         var binding: Binding?
         var children: [Node]?
         if check(.leftBrace) {
@@ -437,15 +588,43 @@ public struct Parser {
             advance()
             if name == "true" { return Expr(.bool(true), range: token.range) }
             if name == "false" { return Expr(.bool(false), range: token.range) }
+            if name == "bind", case .identifier(let target) = current.kind {
+                let targetToken = advance()
+                if check(.dot) {
+                    throw error("`bind` takes a whole state value, not a field", at: current.range)
+                }
+                return Expr(.bind(target), range: token.range.union(targetToken.range))
+            }
             var path = [name]
+            var pathEnd = token.range
             while match(.dot) {
+                let receiverEnd = pathEnd
                 path.append(try expectIdentifier("a property name after `.`").name)
+                pathEnd = previous.range
+                if check(.leftParen) {
+                    // `email.contains("@")`: a method on the value before the last dot.
+                    let method = path.removeLast()
+                    let receiverRange = token.range.union(receiverEnd)
+                    let arguments = try parseArguments(owner: method)
+                    var expr = Expr(.method(receiver: Expr(.path(path), range: receiverRange), name: method, arguments: arguments),
+                                    range: token.range.union(previous.range))
+                    // Allow chains like `name.lowercased().contains("a")`.
+                    while match(.dot) {
+                        let (next, _) = try expectIdentifier("a method name after `.`")
+                        guard check(.leftParen) else {
+                            throw error("expected `(` after `\(next)`; properties of method results come later", at: current.range)
+                        }
+                        let more = try parseArguments(owner: next)
+                        expr = Expr(.method(receiver: expr, name: next, arguments: more), range: token.range.union(previous.range))
+                    }
+                    return expr
+                }
             }
             if check(.leftParen) {
                 throw error(
-                    "calling functions isn't supported yet",
+                    "`\(name)(...)` can't be called here",
                     at: current.range,
-                    help: ["use values, properties like `product.name`, tokens like `.md`, and operators"]
+                    help: ["actions run from a button: `button(\"Go\") { \(name)() }`; built-in methods look like `text.contains(\"a\")`"]
                 )
             }
             return Expr(.path(path), range: token.range.union(previous.range))
