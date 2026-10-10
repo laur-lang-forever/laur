@@ -2,25 +2,27 @@
 ///
 /// Grammar so far:
 ///
-///     file        := (import | component)*
+///     file        := (import | service | component)*
+///     service     := "service" Name "{" (name "(" params? ")" "->" type)* "}"
 ///     import      := "import" name ("." name)*
 ///     component   := "component" Name ("(" params? ")")? "{" member* "}"
 ///     param       := name ":" type
 ///     type        := "bind" type  |  "[" type "]" "?"?  |  name ("." name)* "?"?
 ///     member      := "intent" string  |  "view" block  |  "preview" string "{" entry* "}"
 ///                  | "state" name ":" type "=" expr  |  "derived" name "=" expr
-///                  | "action" name "()" "{" statement* "}"
-///     statement   := name ("=" | "+=" | "-=") expr  |  name "()"
+///                  | "action" name "()" "{" statement* "}"  |  "load" name "=" expr
+///     statement   := name ("=" | "+=" | "-=") expr  |  name "()"  |  name ".reload()"
 ///                  | "if" expr "{" statement* "}" ("else" ...)?
 ///     block       := "{" (name "in")? node* "}"
-///     node        := element | conditional
+///     node        := element | conditional | when
+///     when        := "when" name "{" (("loading" | "failed" | "loaded") ("(" name ")")? block)* "}"
 ///     element     := name "(" args? ")" block?        (a `button`'s block holds statements)
 ///     conditional := "if" expr block ("else" "if" expr block)* ("else" block)?
 ///     args        := arg ("," arg)* ","?
 ///     arg         := (name ":")? expr
 ///     expr        := unary (binop unary)*          precedence: || && (== !=) (< <= > >=) (+ -) (* / %)
 ///     unary       := ("!" | "-") unary | primary
-///     primary     := string | number | "true" | "false" | "(" expr ")"
+///     primary     := string | number | "true" | "false" | "(" expr ")" | "[" (expr ("," expr)*)? "]"
 ///                  | "." name ("(" args? ")")?
 ///                  | "bind" name  |  name ("." name)*  |  name ("." name)+ "(" args? ")"
 ///     entry       := name ":" expr ","?
@@ -44,10 +46,10 @@ public struct Parser {
     // Keywords from the spec that are designed but not built yet. Using one gives a
     // clear "not supported yet" error instead of a confusing syntax error.
     private static let laterTopLevel: Set<String> = ["screen", "gate", "event", "native"]
-    private static let laterMembers: Set<String> = ["load", "on", "slot", "title"]
+    private static let laterMembers: Set<String> = ["on", "slot", "title"]
     private static let laterStatements: Set<String> = ["try", "await", "defer", "navigate", "present", "dismiss", "back", "log", "toast"]
-    private static let laterNodes: Set<String> = ["when", "switch"]
-    private static let memberKeywords: Set<String> = ["view", "preview", "intent", "state", "derived", "action"]
+    private static let laterNodes: Set<String> = ["switch"]
+    private static let memberKeywords: Set<String> = ["view", "preview", "intent", "state", "derived", "load", "action"]
 
     // MARK: - File
 
@@ -63,14 +65,16 @@ public struct Parser {
                 file.imports.append(try parseImport())
             case "component":
                 file.components.append(try parseComponent())
+            case "service":
+                file.services.append(try parseService())
             default:
                 if Self.laterTopLevel.contains(word) {
                     throw notYet(word, at: token.range)
                 }
                 throw error(
-                    "expected `component` or `import`, found `\(word)`",
+                    "expected `component`, `service` or `import`, found `\(word)`",
                     at: token.range,
-                    help: ["every `.laur` file is a list of `component` declarations"]
+                    help: ["a `.laur` file is a list of `component` and `service` declarations"]
                 )
             }
         }
@@ -119,6 +123,7 @@ public struct Parser {
         var states: [StateDecl] = []
         var derived: [DerivedDecl] = []
         var actions: [ActionDecl] = []
+        var loads: [LoadDecl] = []
 
         while !check(.rightBrace) {
             if check(.endOfFile) {
@@ -159,6 +164,8 @@ public struct Parser {
                 derived.append(try parseDerived())
             case "action":
                 actions.append(try parseAction())
+            case "load":
+                loads.append(try parseLoad())
             case "preview":
                 let preview = try parsePreview()
                 if previews.contains(where: { $0.name == preview.name }) {
@@ -172,7 +179,7 @@ public struct Parser {
                 throw error(
                     "unknown member `\(word)` in `\(name)`",
                     at: token.range,
-                    help: ["a component contains `state`, `derived`, `action`, `view`, `preview` and `intent`"]
+                    help: ["a component contains `state`, `derived`, `load`, `action`, `view`, `preview` and `intent`"]
                 )
             }
         }
@@ -185,6 +192,7 @@ public struct Parser {
             intent: intent,
             states: states,
             derived: derived,
+            loads: loads,
             actions: actions,
             view: view,
             previews: previews,
@@ -219,6 +227,51 @@ public struct Parser {
             type = .optional(type)
         }
         return type
+    }
+
+    // MARK: - Services
+
+    /// `service Orders { fetch(userId: String) -> [Order] }`
+    private mutating func parseService() throws -> ServiceDecl {
+        let keyword = advance() // `service`
+        let (name, nameRange) = try expectIdentifier("a service name after `service`")
+        let open = try expect(.leftBrace, "`{` to start the functions of `\(name)`")
+        var functions: [ServiceFunction] = []
+        while !check(.rightBrace) {
+            if check(.endOfFile) {
+                throw unclosed("`service \(name)`", openedAt: open.range)
+            }
+            if case .identifier("component") = current.kind {
+                throw unclosed("`service \(name)`", openedAt: open.range, before: "component")
+            }
+            let (functionName, functionRange) = try expectIdentifier("a function like `fetch(id: String) -> Order`")
+            try expect(.leftParen, "`(` after `\(functionName)`")
+            var params: [Param] = []
+            while !check(.rightParen) {
+                params.append(try parseParam())
+                if !match(.comma) { break }
+            }
+            try expect(.rightParen, "`)` to close the parameters of `\(functionName)`")
+            try expect(.arrow, "`->` and the type `\(functionName)` returns")
+            let returns = try parseType()
+            functions.append(ServiceFunction(name: functionName, nameRange: functionRange, params: params,
+                                             returns: returns, range: functionRange.union(previous.range)))
+        }
+        let close = advance()
+        return ServiceDecl(name: name, nameRange: nameRange, functions: functions, range: keyword.range.union(close.range))
+    }
+
+    /// `load orders = Orders.fetch(userId: userId)`
+    private mutating func parseLoad() throws -> LoadDecl {
+        let keyword = advance() // `load`
+        let (name, nameRange) = try expectIdentifier("a name after `load`")
+        guard case .symbol("=") = current.kind else {
+            throw error("expected `=` and a service call after `\(name)`", at: current.range,
+                        help: ["for example `load \(name) = Orders.fetch(userId: userId)`"])
+        }
+        advance()
+        let call = try parseExpr()
+        return LoadDecl(name: name, nameRange: nameRange, call: call, range: keyword.range.union(call.range))
     }
 
     // MARK: - State, derived values and actions
@@ -311,6 +364,13 @@ public struct Parser {
             throw notYet(name, at: token.range)
         }
         advance()
+        if check(.dot), case .identifier("reload") = peekKind(1) {
+            advance()
+            advance()
+            try expect(.leftParen, "`()` after `reload`")
+            let close = try expect(.rightParen, "`)`; `reload` takes no arguments")
+            return .reload(name: name, range: token.range.union(close.range))
+        }
         if check(.leftParen) {
             advance()
             guard check(.rightParen) else {
@@ -412,6 +472,9 @@ public struct Parser {
         if name == "else" {
             throw error("`else` without an `if` before it", at: token.range)
         }
+        if name == "when" {
+            return .when(try parseWhen())
+        }
         if Self.laterNodes.contains(name) {
             throw notYet(name, at: token.range)
         }
@@ -455,6 +518,35 @@ public struct Parser {
             children: children,
             range: token.range.union(previous.range)
         ))
+    }
+
+    /// `when orders { loading { ... } failed(error) { ... } loaded(items) { ... } }`
+    private mutating func parseWhen() throws -> When {
+        let start = advance() // `when`
+        let (subject, subjectRange) = try expectIdentifier("the name of a `load` after `when`")
+        let open = try expect(.leftBrace, "`{` and the `loading`, `failed` and `loaded` cases of `\(subject)`")
+        var branches: [When.Branch] = []
+        while !check(.rightBrace) {
+            if check(.endOfFile) {
+                throw unclosed("`when \(subject)`", openedAt: open.range)
+            }
+            let (kind, kindRange) = try expectIdentifier("`loading`, `failed` or `loaded`")
+            guard ["loading", "failed", "loaded"].contains(kind) else {
+                var help = closest(to: kind, in: ["loading", "failed", "loaded"]).map { ["did you mean `\($0)`?"] } ?? []
+                help.append("`when` has exactly three cases: `loading`, `failed(error)` and `loaded(value)`")
+                throw error("`\(kind)` isn't a case of `when`", at: kindRange, help: help)
+            }
+            var binding: Binding?
+            if match(.leftParen) {
+                let (bindingName, bindingRange) = try expectIdentifier("a name, like `\(kind == "failed" ? "error" : "items")`")
+                binding = Binding(name: bindingName, range: bindingRange)
+                try expect(.rightParen, "`)` after `\(bindingName)`")
+            }
+            let body = try parseBlock(owner: kind)
+            branches.append(When.Branch(kind: kind, kindRange: kindRange, binding: binding, body: body))
+        }
+        let close = advance()
+        return When(subject: subject, subjectRange: subjectRange, branches: branches, range: start.range.union(close.range))
     }
 
     private mutating func parseConditional() throws -> Conditional {
@@ -570,6 +662,15 @@ public struct Parser {
         case .number(let value):
             advance()
             return Expr(.number(value), range: token.range)
+        case .leftBracket:
+            advance()
+            var items: [Expr] = []
+            while !check(.rightBracket) {
+                items.append(try parseExpr())
+                if !match(.comma) { break }
+            }
+            let close = try expect(.rightBracket, "`]` to close the list")
+            return Expr(.list(items), range: token.range.union(close.range))
         case .leftParen:
             advance()
             var inner = try parseExpr()
