@@ -50,19 +50,41 @@ public enum Printer {
 
     public static func print(_ node: Node, indent: Int) -> [String] {
         let pad = String(repeating: "  ", count: indent)
-        let call = "\(node.name)(\(print(node.arguments)))"
-        guard let children = node.children else {
-            return [pad + call]
+        switch node {
+        case .element(let element):
+            let call = "\(element.name)(\(print(element.arguments)))"
+            guard let children = element.children else {
+                return [pad + call]
+            }
+            let binding = element.binding.map { " \($0.name) in" } ?? ""
+            if children.isEmpty {
+                return [pad + call + " {" + binding + " }"]
+            }
+            var lines = [pad + call + " {" + binding]
+            for child in children {
+                lines += print(child, indent: indent + 1)
+            }
+            lines.append(pad + "}")
+            return lines
+
+        case .conditional(let conditional):
+            var lines: [String] = []
+            for (i, branch) in conditional.branches.enumerated() {
+                let keyword = i == 0 ? pad + "if" : pad + "} else if"
+                lines.append("\(keyword) \(print(branch.condition)) {")
+                for child in branch.body {
+                    lines += print(child, indent: indent + 1)
+                }
+            }
+            if let otherwise = conditional.otherwise {
+                lines.append(pad + "} else {")
+                for child in otherwise {
+                    lines += print(child, indent: indent + 1)
+                }
+            }
+            lines.append(pad + "}")
+            return lines
         }
-        if children.isEmpty {
-            return [pad + call + " {}"]
-        }
-        var lines = [pad + call + " {"]
-        for child in children {
-            lines += print(child, indent: indent + 1)
-        }
-        lines.append(pad + "}")
-        return lines
     }
 
     public static func print(_ arguments: [Argument]) -> String {
@@ -74,6 +96,11 @@ public enum Printer {
         }.joined(separator: ", ")
     }
 
+    private static let precedence: [String: Int] = [
+        "||": 1, "&&": 2, "==": 3, "!=": 3, "<": 4, "<=": 4, ">": 4, ">=": 4,
+        "+": 5, "-": 5, "*": 6, "/": 6, "%": 6,
+    ]
+
     public static func print(_ expr: Expr) -> String {
         switch expr.kind {
         case .string(let s): return quote(s)
@@ -83,11 +110,38 @@ public enum Printer {
         case .token(let name, let arguments):
             guard let arguments else { return ".\(name)" }
             return ".\(name)(\(print(arguments)))"
+        case .unary(let op, let operand):
+            if case .binary = operand.kind { return "\(op)(\(print(operand)))" }
+            return op + print(operand)
+        case .binary(let op, let left, let right):
+            let mine = precedence[op] ?? 0
+            // Parenthesize a side only when it binds looser than this operator (or equally,
+            // on the right, since operators group left to right).
+            func side(_ e: Expr, right: Bool) -> String {
+                let text = Printer.print(e)
+                guard case .binary(let inner, _, _) = e.kind else { return text }
+                let theirs = Printer.precedence[inner] ?? 0
+                return theirs < mine || (right && theirs == mine) ? "(\(text))" : text
+            }
+            return "\(side(left, right: false)) \(op) \(side(right, right: true))"
+        case .interpolation(let parts):
+            var out = "\""
+            for part in parts {
+                switch part {
+                case .text(let text): out += escape(text)
+                case .expr(let e): out += "\\(" + print(e) + ")"
+                }
+            }
+            return out + "\""
         }
     }
 
     static func quote(_ s: String) -> String {
-        var out = "\""
+        "\"" + escape(s) + "\""
+    }
+
+    static func escape(_ s: String) -> String {
+        var out = ""
         for c in s {
             switch c {
             case "\"": out += "\\\""
@@ -97,6 +151,6 @@ public enum Printer {
             default: out.append(c)
             }
         }
-        return out + "\""
+        return out
     }
 }
